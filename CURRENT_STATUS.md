@@ -1,155 +1,171 @@
-# Current Stable Version Backup
+# Current Project Status
 
 Date: 2026-05-26  
 Project: Kindergarten QR Payment & Digital Receipt System
 
 ## 1. Current Working Features
 
-- Streamlit local prototype for payment record tracking and digital receipt generation.
-- Student management with:
-  - Student ID
-  - Student name
-  - Class name
-  - Parent name
-  - Contact
-  - Status
-  - V1 department confirmation field
-- V1 department handling:
+- Streamlit prototype for kindergarten / after-school payment records, QR bill confirmation, CSV reconciliation, and digital receipt generation.
+- Student management with department confirmation support.
+- Program / course management with user-friendly Traditional Chinese dropdowns:
   - 幼兒園
   - 安親班
-  - 待確認
-- CSV student import with department auto-classification preview.
+  - 才藝班
+  - 其他
+- Common course/service templates with auto-filled Program ID, category, default fee, and billing cycle.
+- Custom course/service item creation for non-standard fees.
+- Program editing and disabling. Disabled programs remain available to old bills/enrollments but are not used for new active selections.
+- Enrollment management:
+  - One student can enroll in multiple programs.
+  - Enrollment can use the default program fee or a custom fee override.
 - Bill creation by:
-  - All confirmed students
+  - All active enrollments
   - Department
+  - Course/service item
+  - Program category
   - Class
   - Single student
+  - Selected enrollments
+- Multiple bills per student per month are supported when the student has multiple active enrollments.
 - Unique Bill ID per bill.
 - QR Code generation tied to one bill and one Bill ID.
 - Parent payment mockup page for bill confirmation.
 - Bank/payment CSV import and reconciliation.
 - Reconciliation safety:
-  - Bill ID + matching amount can mark bill as Paid.
-  - Bill ID + amount mismatch becomes Pending Review.
-  - Duplicate transaction IDs are detected.
-  - Already-paid bills are not processed again as new payments.
-  - Amount-only matching does not automatically mark Paid.
-- Digital receipt generation only for Paid bills.
+  - Bill ID + matching amount can mark payment as matched.
+  - Partial payment can be recorded and accumulated.
+  - Duplicate transaction IDs are detected and not posted twice.
+  - Already-paid bills are not processed again as a new payment.
+  - Amount-only matching does not automatically mark a bill paid.
+- Payment records table for imported/recorded payments.
+- Payment arrangements table for grace period and promised payment date notes.
+- Digital receipt generation only after the bill is fully paid.
 - Receipt issue date, payment date, and due date are stored/displayed separately.
-- Admin settings for:
-  - Kindergarten name
-  - Address
-  - Phone
-  - Receipt prefix
-  - Bank/payment account display text
-  - Receipt footer text
-  - Responsible person
-- Audit log for key actions.
+- Admin settings for kindergarten name, address, phone, receipt prefix, bank/payment display text, receipt footer text, and responsible person.
+- Audit log for key actions, including program changes, enrollments, payment imports, arrangements, QR generation, and receipts.
 - Backup/export support.
-- Legacy safety for students whose department is still 待確認:
-  - Batch bill creation excludes them.
-  - Existing bills show a warning.
-  - QR regeneration is blocked.
-  - Receipt generation is blocked.
-  - Blocked actions are recorded in audit log.
+- Responsibility notice is preserved:
+  - This is not an e-invoice system.
+  - All payments go directly to the kindergarten official account.
+  - The developer does not receive, store, manage, or process money.
 
-## 2. Known Limitations
+## 2. Latest Changelog
 
-- This is a local V1 prototype, not a production deployment.
-- This is not an e-invoice system.
-- No real bank API, payment API, webhook, credit card processing, or parent login is implemented.
-- The current model still uses a single V1 `department` field.
-- The multi-program/enrollment model is not implemented yet.
-- Partial payments, grace periods, promised payment dates, overpayments, and refund/apply-to-next-month handling are not implemented yet.
-- Bank CSV import currently expects the prototype sample CSV format.
-- Real bank column mapping and flexible date/amount parsing are not implemented yet.
-- Existing SQLite data may include development/test records, generated QR images, and generated receipt samples.
-- Some old records may retain historical values from previous test runs.
-- Streamlit may show `use_container_width` deprecation warnings; these do not currently block the app.
+- Improved Program / Course UI for non-technical admin users.
+- Added department-first course selection:
+  - 幼兒園
+  - 安親班
+  - 才藝班
+  - 其他
+- Course dropdowns are filtered by selected department.
+- Added common course templates such as:
+  - 幼兒園月費
+  - 一般安親班
+  - 安親兒童美語
+  - 兒童美語
+  - 書法班
+  - 交通費
+  - 材料費
+- Common courses auto-fill:
+  - Program ID
+  - Program category
+  - Default fee amount
+  - Billing cycle
+- Billing cycle now displays in Traditional Chinese:
+  - monthly -> 月繳
+  - one-time -> 單次
+  - semester -> 學期
+  - per-class -> 依堂數
+- Added optional custom course/service item path.
+- Added quick edit area for existing courses.
+- Enrollment flow now uses department -> filtered course/service item.
+- Bill creation flow now supports department-filtered course and enrollment selections.
+- Added audit log events:
+  - Program created
+  - Program edited
+  - Program disabled
+  - Enrollment created
+  - Custom fee override used
 
-## 3. Current Database Schema
+## 3. Modified Files
 
-SQLite database path:
+- `app.py`
+  - Added course templates, billing cycle labels, department filters, improved program UI, improved enrollment flow, and department-filtered bill creation.
+- `database.py`
+  - Updated default program/course seed data for common kindergarten, after-school, talent, and other service items.
+  - Added a small migration correction for the default 書法班 fee.
+- `CURRENT_STATUS.md`
+  - Updated to reflect the current working version and latest changes.
 
-```text
-data/kindergarten.db
-```
+## 4. Database / Schema Changes
 
-### students
+No new tables were added in the latest UI change.
 
-| Column | Type | Notes |
-|---|---|---|
-| student_id | TEXT | Primary key |
-| student_name | TEXT | Required |
-| class_name | TEXT | Required |
-| parent_name | TEXT | Required |
-| contact | TEXT | Optional |
-| status | TEXT | Default: active |
-| created_at | TEXT | Default: CURRENT_TIMESTAMP |
-| department | TEXT | Default: 待確認 |
+Existing relevant tables:
+
+### programs
+
+| Column | Purpose |
+|---|---|
+| program_id | Program/course/service ID |
+| program_name | Program/course/service name |
+| program_category | Category such as 幼兒園, 安親班, 兒童美語, 美術 |
+| default_fee_amount | Default fee amount |
+| billing_cycle | Stored internally as monthly, one-time, semester, or per-class |
+| status | active / inactive |
+| notes | Admin notes |
+
+### enrollments
+
+| Column | Purpose |
+|---|---|
+| enrollment_id | Enrollment ID |
+| student_id | Linked student |
+| program_id | Linked program/course/service item |
+| start_date | Enrollment start date |
+| end_date | Optional end date |
+| enrollment_status | active / paused / ended |
+| custom_fee_amount | Optional custom fee override |
+| notes | Admin notes |
 
 ### bills
 
-| Column | Type | Notes |
-|---|---|---|
-| bill_id | TEXT | Primary key |
-| student_id | TEXT | Required |
-| student_name | TEXT | Required snapshot |
-| class_name | TEXT | Required snapshot |
-| parent_name | TEXT | Required snapshot |
-| month | TEXT | Billing month |
-| fee_item | TEXT | Fee item |
-| amount | INTEGER | Bill amount |
-| due_date | TEXT | Payment deadline |
-| status | TEXT | Default: Unpaid |
-| payment_date | TEXT | Actual payment date after reconciliation/admin confirmation |
-| receipt_number | TEXT | Receipt number |
-| notes | TEXT | Admin notes |
-| qr_path | TEXT | Internal local QR path, hidden from user UI |
-| receipt_path | TEXT | Internal local receipt path, hidden from user UI |
-| created_at | TEXT | Default: CURRENT_TIMESTAMP |
-| receipt_issue_date | TEXT | Date receipt PDF was generated/regenerated |
-| qr_signature | TEXT | Used to detect stale QR data |
-| qr_stale | INTEGER | 0/1 flag |
+Relevant program/payment fields include:
 
-### transactions
+| Column | Purpose |
+|---|---|
+| program_id | Linked program/course/service item |
+| enrollment_id | Linked enrollment if created from enrollment |
+| billing_month | Program bill month |
+| total_amount | Total bill amount |
+| paid_amount | Cumulative paid amount |
+| remaining_amount | Remaining amount |
+| grace_until_date | Optional grace period date |
+| last_payment_date | Last payment date |
+| payment_status | Human-readable payment status |
 
-| Column | Type | Notes |
-|---|---|---|
-| transaction_id | TEXT | Primary key |
-| transaction_date | TEXT | Required |
-| amount | INTEGER | Required |
-| payer_name | TEXT | Optional |
-| payment_note | TEXT | Optional |
-| match_status | TEXT | Required |
-| confidence | TEXT | Match confidence |
-| matched_bill_id | TEXT | Matched bill if any |
-| warning | TEXT | Reconciliation message |
-| imported_at | TEXT | Default: CURRENT_TIMESTAMP |
+### payment_records
 
-### settings
+Stores imported or recorded payment entries.
 
-| Column | Type | Notes |
-|---|---|---|
-| key | TEXT | Primary key |
-| value | TEXT | Required |
+### payment_arrangements
+
+Stores grace period, promised payment date, and arrangement notes.
 
 ### audit_logs
 
-| Column | Type | Notes |
-|---|---|---|
-| id | INTEGER | Primary key |
-| event_type | TEXT | Required |
-| entity_type | TEXT | Optional |
-| entity_id | TEXT | Optional |
-| message | TEXT | Required |
-| created_at | TEXT | Default: CURRENT_TIMESTAMP |
+Stores system action records.
 
-### sqlite_sequence
+## 5. Behavior Changed
 
-Internal SQLite table used for autoincrement values.
+- Admin users no longer need to manually type Program ID for common courses.
+- Admin users select department first, then see only relevant course/service items.
+- Billing cycle is displayed in Traditional Chinese while internal stored values remain English.
+- Course setup is easier for standard use cases but still allows advanced/custom courses.
+- Enrollment and bill creation now use the same department/course filtering pattern.
+- Existing QR, reconciliation, receipt, payment safety, admin settings, and audit behavior remain unchanged.
 
-## 4. How To Run The App
+## 6. How To Run The App
 
 Install dependencies:
 
@@ -175,99 +191,85 @@ Open:
 http://127.0.0.1:8501
 ```
 
-## 5. How To Test The Core Flow
+## 7. How To Test The Latest Course UI
 
-1. Open the app and confirm the dashboard loads.
-2. Go to Student Management.
-3. Add or edit a student.
-4. Confirm the student department is not 待確認 before creating a bill.
-5. Go to Bill Management.
-6. Create a bill for a confirmed student, class, or department.
-7. Confirm the bill has a unique Bill ID.
-8. Confirm the QR Code is generated and tied to that Bill ID.
-9. Open the parent payment mockup page and verify:
-   - Student name
-   - Class
-   - Fee item
-   - Amount
-   - Due date
-   - Bill ID
-   - Payment reference text
-10. Go to CSV Import and upload the sample bank statement CSV.
-11. Confirm exact Bill ID + amount matches can mark bills Paid.
-12. Confirm amount mismatches become Pending Review.
-13. Confirm duplicate transactions are detected.
-14. Go to Digital Receipts.
-15. Confirm only Paid bills can generate PDF receipts.
-16. Confirm unpaid, pending review, cancelled, stale, or 待確認 student bills cannot generate receipts.
-17. Review Audit Log after bill creation, reconciliation, blocked actions, and receipt generation.
+1. Open the app.
+2. Go to `課程與收費項目管理`.
+3. Select department `幼兒園`.
+4. Confirm the course dropdown shows kindergarten-related items only.
+5. Select `幼兒園月費`.
+6. Confirm the form auto-fills:
+   - Program ID: `PRG-KG-MONTHLY`
+   - Category: `幼兒園`
+   - Default fee: `8500`
+   - Billing cycle: `月繳`
+7. Select department `安親班`.
+8. Confirm the dropdown shows after-school items such as `一般安親班`, `安親兒童美語`, and `安親美術班`.
+9. Select department `才藝班`.
+10. Confirm the dropdown shows items such as `兒童美語`, `美術班`, `書法班`, and `假日才藝班`.
+11. Select `自訂課程 / 自訂收費項目`.
+12. Confirm manual fields appear for Program ID, course name, category, default fee, billing cycle, and notes.
+13. Save a test program and confirm it appears in the course table.
+14. Use `快速編輯現有課程` to adjust a default fee or disable a course.
+15. Confirm old bills/enrollments are not deleted when a course is disabled.
 
-## 6. Pending Backlog
+## 8. How To Test Enrollment And Bills
 
-Do not implement these all at once. Recommended order:
+1. Go to `學生課程報名管理`.
+2. Select a student.
+3. Select department `安親班`.
+4. Select `一般安親班`.
+5. Confirm the default fee is shown.
+6. Optionally enter a custom fee override.
+7. Save the enrollment.
+8. Go to `繳費帳單`.
+9. In `依課程報名建立帳單`, select a billing month and due date.
+10. Select a department and create bills by:
+    - 部門
+    - 單一課程
+    - 課程類別
+    - 班級
+    - 單一學生
+    - 指定報名
+11. Confirm each generated bill has a unique Bill ID and QR Code.
+12. Continue the existing CSV reconciliation and receipt tests:
+    - Partial payment should not generate final receipt.
+    - Duplicate transaction should not double-post.
+    - Fully paid bill can generate receipt.
 
-1. Real bank CSV adaptation:
+## 9. Known Limitations
+
+- This is still a prototype, not a production accounting system.
+- Streamlit Community Cloud can run the demo, but SQLite local storage is not ideal for formal production data persistence.
+- Existing old sample programs may still remain in the database because seed data uses insert-if-missing and does not delete old records.
+- The department filter is based on course name/category inference, not a dedicated department column in `programs`.
+- Real bank CSV formats still need a mapping/import setup for production use.
+- No real payment gateway, bank API, webhook, credit card processing, or parent login is implemented.
+- Streamlit may show `use_container_width` deprecation warnings; they do not currently block the app.
+
+## 10. Pending Backlog
+
+Recommended next implementation order:
+
+1. Real bank CSV mapping:
    - Column mapping
    - Different date formats
    - Different amount formats
-
-2. Nordic-style, family-friendly wording pass:
-   - Avoid debt-collection tone
-   - Use calm, respectful payment wording
-   - Emphasize clarity, dignity, and communication
-
-3. Multi-program model:
-   - `programs` table
-   - `enrollments` table
-   - Program/service item management
-   - One student can enroll in multiple programs
-   - Bill creation by program, category, enrollment, student, or class
-
-4. Program examples:
-   - 幼兒園部
-   - 一般平日安親班
-   - 安親兒童美語
-   - 只上兒童美語但沒有參加安親
-   - 假日才藝班
-   - 安親美術班
-   - 書法班
-
-5. Flexible payment handling:
-   - `payment_records` table
-   - Partial payment
-   - Paid amount
-   - Remaining amount
-   - Grace period
-   - Promised payment date
+2. Stronger production data persistence:
+   - Cloud database
+   - Backup policy
+   - Admin-only access
+3. Parent-facing refinements:
+   - More friendly status-specific text
+   - Receipt download flow after confirmation
+4. More complete payment arrangement workflow:
    - Parent contacted kindergarten
-   - Temporary reminder pause
-   - Overpayment handling
-   - Refund or apply-to-next-month note
-
-6. Human-centered payment statuses:
-   - 未付款
-   - 已付款
-   - 部分付款
-   - 寬限期中
-   - 已約定補繳日
-   - 家長已聯繫園方
-   - 待對帳確認
-   - 金額需確認
-   - 溢付款需處理
-   - 暫緩提醒
-   - 取消帳單
-   - 作廢/更正
-
-7. Dashboard and parent page enhancements:
-   - 今日待處理事項
-   - 待確認繳費
-   - 收據產生狀態
-   - 家長溝通備註
-   - 寬限期中
-   - 已約定補繳
-   - 部分付款
-
-8. Migration from department confirmation to program/enrollment confirmation.
+   - Reminder pause
+   - Refund / apply-to-next-month note
+5. Audit log UI improvements:
+   - Filters
+   - Export
+   - Better display labels
 
 ## Responsibility Notice
 
@@ -275,4 +277,5 @@ This system is for payment tracking and digital receipt generation only.
 All payments go directly to the kindergarten official account.
 The system developer does not receive, store, manage, or process money.
 Accounting, tax, refund, and legal receipt content must be confirmed by the kindergarten and its accountant.
+This system is not an e-invoice system.
 V1 does not connect to real banking or payment APIs.
