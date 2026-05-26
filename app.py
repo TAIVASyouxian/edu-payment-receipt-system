@@ -1316,21 +1316,21 @@ def parent_record_text(bill: dict, record_type: str) -> bytes:
 
 
 def render_parent_detail_cards(display: dict[str, str]) -> None:
-    cards = [
-        ("學生", display["student"]),
-        ("班級", display["class_name"]),
-        ("金額", display["amount"]),
-    ]
-    html_cards = "".join(
-        f"""
-        <div class="parent-detail-card">
-            <div class="parent-detail-label">{html.escape(label)}</div>
-            <div class="parent-detail-value">{html.escape(str(value))}</div>
-        </div>
-        """
-        for label, value in cards
-    )
-    st.markdown(f'<div class="parent-detail-grid">{html_cards}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="parent-detail-grid">', unsafe_allow_html=True)
+    columns = st.columns(3)
+    cards = [("學生", display["student"]), ("班級", display["class_name"]), ("金額", display["amount"])]
+    for column, (label, value) in zip(columns, cards):
+        with column:
+            st.markdown(
+                f"""
+                <div class="parent-detail-card">
+                    <div class="parent-detail-label">{html.escape(label)}</div>
+                    <div class="parent-detail-value">{html.escape(str(value))}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def parent_header_card(display: dict[str, str]) -> str:
