@@ -163,22 +163,26 @@ def init_db() -> None:
             if not column_exists(conn, table, column):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+        def copy_column_if_both_exist(table: str, target_column: str, source_column: str) -> None:
+            if column_exists(conn, table, target_column) and column_exists(conn, table, source_column):
+                conn.execute(
+                    f"UPDATE {table} SET {target_column} = {source_column} "
+                    f"WHERE {target_column} IS NULL"
+                )
+
         add_column_if_missing("bills", "receipt_issue_date", "TEXT")
         add_column_if_missing("bills", "qr_signature", "TEXT")
         add_column_if_missing("bills", "qr_stale", "INTEGER NOT NULL DEFAULT 0")
         add_column_if_missing("bills", "program_id", "TEXT")
         add_column_if_missing("bills", "enrollment_id", "TEXT")
         add_column_if_missing("bills", "billing_month", "TEXT")
-        if column_exists(conn, "bills", "billing_month") and column_exists(conn, "bills", "month"):
-            conn.execute("UPDATE bills SET billing_month = month WHERE billing_month IS NULL")
+        copy_column_if_both_exist("bills", "billing_month", "month")
 
         add_column_if_missing("bills", "payment_status", "TEXT")
-        if column_exists(conn, "bills", "payment_status") and column_exists(conn, "bills", "status"):
-            conn.execute("UPDATE bills SET payment_status = status WHERE payment_status IS NULL")
+        copy_column_if_both_exist("bills", "payment_status", "status")
 
         add_column_if_missing("bills", "total_amount", "REAL DEFAULT 0")
-        if column_exists(conn, "bills", "total_amount") and column_exists(conn, "bills", "amount"):
-            conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+        copy_column_if_both_exist("bills", "total_amount", "amount")
 
         add_column_if_missing("bills", "paid_amount", "REAL DEFAULT 0")
         if column_exists(conn, "bills", "paid_amount"):
@@ -210,8 +214,8 @@ def init_db() -> None:
             WHERE qr_token IS NOT NULL
             """
         )
-        if {"paid_amount", "total_amount", "amount", "remaining_amount", "payment_status", "last_payment_date", "payment_date", "status"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, amount), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
+        if {"paid_amount", "total_amount", "remaining_amount", "payment_status", "last_payment_date", "payment_date", "status"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, 0), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
         if {"payment_status", "status"}.issubset(bill_columns):
             conn.execute("UPDATE bills SET payment_status = '未付款' WHERE status = 'Unpaid' AND (payment_status IS NULL OR payment_status = 'Unpaid')")
             conn.execute("UPDATE bills SET payment_status = '待對帳確認' WHERE status = 'Pending Review' AND (payment_status IS NULL OR payment_status = 'Pending Review')")
