@@ -175,14 +175,26 @@ def init_db() -> None:
         add_column_if_missing("bills", "qr_stale", "INTEGER NOT NULL DEFAULT 0")
         add_column_if_missing("bills", "program_id", "TEXT")
         add_column_if_missing("bills", "enrollment_id", "TEXT")
+        add_column_if_missing("bills", "month", "TEXT DEFAULT ''")
+        add_column_if_missing("bills", "amount", "INTEGER DEFAULT 0")
         add_column_if_missing("bills", "billing_month", "TEXT")
         copy_column_if_both_exist("bills", "billing_month", "month")
+        if column_exists(conn, "bills", "month") and column_exists(conn, "bills", "billing_month"):
+            conn.execute(
+                "UPDATE bills SET month = billing_month "
+                "WHERE (month IS NULL OR month = '') AND billing_month IS NOT NULL"
+            )
 
         add_column_if_missing("bills", "payment_status", "TEXT")
         copy_column_if_both_exist("bills", "payment_status", "status")
 
         add_column_if_missing("bills", "total_amount", "REAL DEFAULT 0")
         copy_column_if_both_exist("bills", "total_amount", "amount")
+        if column_exists(conn, "bills", "amount") and column_exists(conn, "bills", "total_amount"):
+            conn.execute(
+                "UPDATE bills SET amount = total_amount "
+                "WHERE (amount IS NULL OR amount = 0) AND total_amount IS NOT NULL"
+            )
 
         add_column_if_missing("bills", "paid_amount", "REAL DEFAULT 0")
         if column_exists(conn, "bills", "paid_amount"):
