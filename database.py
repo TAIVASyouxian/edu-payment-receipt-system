@@ -175,15 +175,22 @@ def init_db() -> None:
             conn.execute("UPDATE bills SET billing_month = month WHERE billing_month IS NULL")
         if "payment_status" not in bill_columns:
             conn.execute("ALTER TABLE bills ADD COLUMN payment_status TEXT")
-            conn.execute("UPDATE bills SET payment_status = status WHERE payment_status IS NULL")
+            bill_columns = table_columns("bills")
+            if "status" in bill_columns:
+                conn.execute("UPDATE bills SET payment_status = status WHERE payment_status IS NULL")
         if "total_amount" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN total_amount INTEGER")
-            conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+            conn.execute("ALTER TABLE bills ADD COLUMN total_amount INTEGER NOT NULL DEFAULT 0")
+        bill_columns = table_columns("bills")
+        if {"total_amount", "amount"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET total_amount = COALESCE(amount, 0) WHERE total_amount IS NULL OR total_amount = 0")
         if "paid_amount" not in bill_columns:
             conn.execute("ALTER TABLE bills ADD COLUMN paid_amount INTEGER NOT NULL DEFAULT 0")
+        bill_columns = table_columns("bills")
         if "remaining_amount" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN remaining_amount INTEGER")
-            conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
+            conn.execute("ALTER TABLE bills ADD COLUMN remaining_amount INTEGER NOT NULL DEFAULT 0")
+        bill_columns = table_columns("bills")
+        if {"remaining_amount", "total_amount", "paid_amount"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET remaining_amount = MAX(COALESCE(total_amount, 0) - COALESCE(paid_amount, 0), 0) WHERE remaining_amount IS NULL OR remaining_amount = 0")
         if "grace_until_date" not in bill_columns:
             conn.execute("ALTER TABLE bills ADD COLUMN grace_until_date TEXT")
         if "last_payment_date" not in bill_columns:
@@ -207,11 +214,11 @@ def init_db() -> None:
             """
         )
         if {"total_amount", "amount"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+            conn.execute("UPDATE bills SET total_amount = COALESCE(amount, 0) WHERE total_amount IS NULL OR total_amount = 0")
         if "paid_amount" in bill_columns:
             conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
-        if {"remaining_amount", "total_amount", "amount", "paid_amount"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
+        if {"remaining_amount", "total_amount", "paid_amount"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET remaining_amount = MAX(COALESCE(total_amount, 0) - COALESCE(paid_amount, 0), 0) WHERE remaining_amount IS NULL")
         if {"paid_amount", "total_amount", "amount", "remaining_amount", "payment_status", "last_payment_date", "payment_date", "status"}.issubset(bill_columns):
             conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, amount), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
         if {"payment_status", "status"}.issubset(bill_columns):
