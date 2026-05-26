@@ -67,6 +67,7 @@ Project: Kindergarten QR Payment & Digital Receipt System
 - For test deployment, database reset to kindergarten_v3.db because old SQLite schema was test-only and incompatible.
 - To reduce SQLite locking on Streamlit Cloud, automatic QR token repair no longer runs on every rerun. Use 管理設定 -> 系統維護 -> 修復 / 補齊 QR Token when needed.
 - Official QR Codes require 管理設定 -> 付款頁 Base URL. QR raw content must be a full URL like `<payment_page_base_url>/?page=parent&token=<qr_token>`; the app no longer falls back to a relative `?page=parent&token=...` QR payload.
+- Parent payment page now uses a mobile-first responsive layout for QR scanning.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園

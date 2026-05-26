@@ -149,28 +149,55 @@ CSS = """
     }
     .parent-detail-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
-        margin: 18px 0 12px 0;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        margin: 14px 0 12px 0;
     }
     .parent-detail-card {
         background: #fffdf8;
         border: 1px solid #d7d1c6;
         border-radius: 12px;
-        padding: 14px 16px;
+        padding: 12px 14px;
         box-shadow: 0 6px 18px rgba(44, 52, 49, 0.05);
     }
     .parent-detail-label {
         color: #5B3A8E;
         font-size: 14px;
         font-weight: 700;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
     }
     .parent-detail-value {
         color: #263238;
-        font-size: 24px;
+        font-size: 21px;
         font-weight: 800;
         line-height: 1.25;
+        overflow-wrap: anywhere;
+    }
+    .parent-page-shell {
+        max-width: 460px;
+        margin: 0 auto;
+        padding: 0 6px 24px 6px;
+    }
+    .parent-header-card {
+        background: #fffdf8;
+        border: 1px solid #d7d1c6;
+        border-radius: 14px;
+        padding: 16px 16px;
+        margin: 6px 0 12px 0;
+        color: #263238;
+        box-shadow: 0 8px 20px rgba(44, 52, 49, 0.05);
+    }
+    .parent-page-title {
+        font-size: 30px;
+        line-height: 1.18;
+        font-weight: 850;
+        color: #263238;
+        margin: 0 0 10px 0;
+    }
+    .parent-watermark {
+        color: #607D8B;
+        font-size: 12px;
+        line-height: 1.55;
         overflow-wrap: anywhere;
     }
     .parent-safety-notice {
@@ -183,6 +210,16 @@ CSS = """
         font-weight: 750;
         line-height: 1.65;
     }
+    .parent-reminder-card {
+        background: #eef4f1;
+        border: 1px solid #cfddd6;
+        border-radius: 12px;
+        padding: 13px 15px;
+        margin: 12px 0;
+        color: #263238;
+        font-size: 16px;
+        line-height: 1.72;
+    }
     .parent-summary {
         background: #fffdf8;
         border: 1px solid #d7d1c6;
@@ -193,6 +230,20 @@ CSS = """
         line-height: 1.7;
     }
     .parent-summary strong { color: #5B3A8E; font-weight: 800; }
+    .parent-payment-section {
+        background: #fffdf8;
+        border: 1px solid #d7d1c6;
+        border-radius: 12px;
+        padding: 14px 16px;
+        margin: 14px 0;
+        color: #263238;
+        line-height: 1.7;
+    }
+    .parent-payment-section h3 {
+        font-size: 20px;
+        margin: 0 0 10px 0;
+        color: #263238;
+    }
     @media (max-width: 640px) {
         .parent-detail-grid {
             grid-template-columns: 1fr;
@@ -206,6 +257,33 @@ CSS = """
         }
         .parent-detail-value {
             font-size: 22px;
+        }
+    }
+    @media (min-width: 700px) {
+        .parent-detail-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .parent-page-shell {
+            max-width: 480px;
+        }
+    }
+    @media (max-width: 600px) {
+        .main .block-container {
+            padding-left: 0.85rem;
+            padding-right: 0.85rem;
+        }
+        .parent-page-title {
+            font-size: 30px;
+        }
+        .parent-reminder-card,
+        .parent-safety-notice,
+        .parent-summary,
+        .parent-payment-section {
+            font-size: 16px;
+        }
+        .stDownloadButton button {
+            width: 100%;
+            margin-bottom: 8px;
         }
     }
 </style>
@@ -1255,11 +1333,31 @@ def render_parent_detail_cards(display: dict[str, str]) -> None:
     st.markdown(f'<div class="parent-detail-grid">{html_cards}</div>', unsafe_allow_html=True)
 
 
+def parent_header_card(display: dict[str, str]) -> str:
+    return f"""
+    <div class="parent-header-card">
+        <div class="parent-page-title">家長繳費資訊確認</div>
+        <div class="parent-watermark">{html.escape(display["watermark"])}</div>
+    </div>
+    """
+
+
+def parent_reminder_card() -> str:
+    return """
+    <div class="parent-reminder-card">
+        此頁面僅供家長確認繳費資訊使用。若您已付款，可能尚在對帳中；
+        若近期需要繳費時間安排，請與園方聯繫，我們會協助確認。
+    </div>
+    """
+
+
 def parent_payment_page() -> None:
-    st.title("家長繳費資訊確認")
     token = st.query_params.get("token")
     if not token:
+        st.markdown('<div class="parent-page-shell">', unsafe_allow_html=True)
+        st.markdown('<div class="parent-header-card"><div class="parent-page-title">家長繳費資訊確認</div></div>', unsafe_allow_html=True)
         st.info("請從園方提供的 QR Code 或繳費連結開啟。")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     bills = read_df(
@@ -1275,7 +1373,10 @@ def parent_payment_page() -> None:
     )
     if bills.empty:
         log_audit("invalid QR token access", "qr_token", token or "", "Invalid QR token accessed.")
+        st.markdown('<div class="parent-page-shell">', unsafe_allow_html=True)
+        st.markdown('<div class="parent-header-card"><div class="parent-page-title">家長繳費資訊確認</div></div>', unsafe_allow_html=True)
         st.error("此繳費連結已失效，請聯繫園方重新確認。")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
     bill = bills.iloc[0].to_dict()
     settings = get_settings()
@@ -1283,12 +1384,13 @@ def parent_payment_page() -> None:
     token_status = str(bill.get("qr_token_status") or "active")
     expired_now = expire_overdue_token(bill)
 
-    st.caption(display["watermark"])
+    st.markdown('<div class="parent-page-shell">', unsafe_allow_html=True)
+    st.markdown(parent_header_card(display), unsafe_allow_html=True)
     st.markdown(
         '<div class="parent-safety-notice">為保護資料安全，請勿轉傳此繳費連結或 QR Code。</div>',
         unsafe_allow_html=True,
     )
-    st.info("此頁面僅供家長確認繳費資訊使用。若您已付款，可能尚在對帳中；若近期需要繳費時間安排，請與園方聯繫，我們會協助確認。")
+    st.markdown(parent_reminder_card(), unsafe_allow_html=True)
 
     if bill["status"] == PAID:
         log_audit("Paid bill QR accessed again", "bill", bill["bill_id"], f"Paid bill QR accessed again for {bill['bill_id']}.")
@@ -1343,9 +1445,16 @@ def parent_payment_page() -> None:
         unsafe_allow_html=True,
     )
 
-    st.subheader("付款說明")
-    st.write(settings["bank_account_text"])
-    st.info("請透過幼兒園官方帳戶完成付款。本系統不處理、不代收、不保管任何款項。")
+    st.markdown(
+        f"""
+        <div class="parent-payment-section">
+            <h3>付款說明</h3>
+            <div>{html.escape(settings["bank_account_text"])}</div>
+            <div style="margin-top:10px;">請透過幼兒園官方帳戶完成付款。本系統不處理、不代收、不保管任何款項。</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("**付款備註 / 轉帳附言**")
     st.code(payment_reference(bill), language="text")
 
@@ -1367,6 +1476,7 @@ def parent_payment_page() -> None:
                 log_audit("Parent downloads receipt PDF", "bill", bill["bill_id"], f"Parent downloaded receipt PDF for {bill['bill_id']}.")
         if st.download_button("下載對帳確認紀錄", data=parent_record_text(bill, "對帳確認紀錄"), file_name=f"{bill['bill_id']}_reconciliation_confirmation.txt", mime="text/plain"):
             log_audit("Parent downloads reconciliation confirmation record", "bill", bill["bill_id"], f"Parent downloaded reconciliation confirmation for {bill['bill_id']}.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def reconciliation_page() -> None:
