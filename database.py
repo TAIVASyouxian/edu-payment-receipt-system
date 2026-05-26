@@ -152,7 +152,14 @@ def init_db() -> None:
             """
         )
 
-        bill_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bills)").fetchall()}
+        def table_columns(table: str) -> set[str]:
+            return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+        def add_column_if_missing(table: str, column: str, definition: str) -> None:
+            if column not in table_columns(table):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+        bill_columns = table_columns("bills")
         if "receipt_issue_date" not in bill_columns:
             conn.execute("ALTER TABLE bills ADD COLUMN receipt_issue_date TEXT")
         if "qr_signature" not in bill_columns:
@@ -191,6 +198,7 @@ def init_db() -> None:
             conn.execute("ALTER TABLE bills ADD COLUMN qr_token_used_at TEXT")
         if "qr_token_expires_at" not in bill_columns:
             conn.execute("ALTER TABLE bills ADD COLUMN qr_token_expires_at TEXT")
+        bill_columns = table_columns("bills")
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_bills_qr_token
@@ -198,14 +206,19 @@ def init_db() -> None:
             WHERE qr_token IS NOT NULL
             """
         )
-        conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
-        conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
-        conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
-        conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, amount), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
-        conn.execute("UPDATE bills SET payment_status = '未付款' WHERE status = 'Unpaid' AND (payment_status IS NULL OR payment_status = 'Unpaid')")
-        conn.execute("UPDATE bills SET payment_status = '待對帳確認' WHERE status = 'Pending Review' AND (payment_status IS NULL OR payment_status = 'Pending Review')")
+        if {"total_amount", "amount"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+        if "paid_amount" in bill_columns:
+            conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
+        if {"remaining_amount", "total_amount", "amount", "paid_amount"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
+        if {"paid_amount", "total_amount", "amount", "remaining_amount", "payment_status", "last_payment_date", "payment_date", "status"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, amount), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
+        if {"payment_status", "status"}.issubset(bill_columns):
+            conn.execute("UPDATE bills SET payment_status = '未付款' WHERE status = 'Unpaid' AND (payment_status IS NULL OR payment_status = 'Unpaid')")
+            conn.execute("UPDATE bills SET payment_status = '待對帳確認' WHERE status = 'Pending Review' AND (payment_status IS NULL OR payment_status = 'Pending Review')")
 
-        student_columns = {row["name"] for row in conn.execute("PRAGMA table_info(students)").fetchall()}
+        student_columns = table_columns("students")
         if "department" not in student_columns:
             conn.execute("ALTER TABLE students ADD COLUMN department TEXT NOT NULL DEFAULT '待確認'")
         conn.executemany(
