@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+import secrets
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -48,18 +49,52 @@ def next_receipt_number(month: str | None = None) -> str:
 
 
 def payment_reference(bill: dict) -> str:
-    return (
-        f"KINDERGARTEN_PAYMENT|bill_id={bill['bill_id']}|student={bill['student_name']}|"
-        f"class={bill['class_name']}|item={bill['fee_item']}|amount={bill['amount']}"
-    )
+    return f"KINDERGARTEN_PAYMENT|bill_id={bill['bill_id']}"
 
 
-def parent_payment_url(bill_id: str) -> str:
-    return f"http://localhost:8501/?page=parent&bill_id={bill_id}"
+def parent_payment_url(token: str) -> str:
+    settings = get_settings()
+    base_url = str(settings.get("payment_page_base_url") or "").strip().rstrip("/")
+    if base_url:
+        return f"{base_url}/?page=parent&token={token}"
+    return f"?page=parent&token={token}"
 
 
 def normalize_text(value: object) -> str:
     return "" if value is None else str(value).strip()
+
+
+def mask_student_name(full_name: object) -> str:
+    name = normalize_text(full_name)
+    if not name:
+        return "學生"
+    if all("\u4e00" <= char <= "\u9fff" for char in name):
+        if len(name) == 1:
+            return f"{name}O"
+        if len(name) == 2:
+            return f"{name[0]}O"
+        if len(name) == 3:
+            return f"{name[0]}O{name[-1]}"
+        return f"{name[:2]}O{name[-1]}"
+    return f"{name[0]}{'*' * max(len(name) - 1, 4)}"
+
+
+def parent_watermark(bill: dict, settings: dict | None = None) -> str:
+    values = settings or get_settings()
+    timestamp = pd.Timestamp.now().strftime("%Y/%m/%d %H:%M")
+    department = bill.get("department") or bill.get("program_category") or ""
+    course = bill.get("program_name") or bill.get("fee_item") or ""
+    return "｜".join(
+        [
+            str(values.get("kindergarten_name") or ""),
+            str(department or ""),
+            str(bill.get("class_name") or ""),
+            str(course or ""),
+            mask_student_name(bill.get("student_name")),
+            str(bill.get("bill_id") or ""),
+            timestamp,
+        ]
+    )
 
 
 def find_bill_id_in_note(note: str) -> str | None:
@@ -82,10 +117,32 @@ def log_audit(event_type: str, entity_type: str | None, entity_id: str | None, m
 def generate_qr_for_bill(bill: dict) -> str:
     bill_id = normalize_text(bill.get("bill_id"))
     if not bill_id:
-        raise ValueError("QR Code 必須包含唯一 Bill ID。")
-    payload = parent_payment_url(bill_id)
-    if bill_id not in payload:
-        raise ValueError("QR Code payload 必須包含 Bill ID。")
+        raise ValueError("QR Code 必須綁定唯一 Bill ID。")
+    token = normalize_text(bill.get("qr_token"))
+    if not token:
+        token = secrets.token_urlsafe(32)
+        expires_at = bill.get("due_date")
+        if not expires_at:
+            try:
+                days = int(get_settings().get("default_qr_token_valid_days") or 14)
+            except ValueError:
+                days = 14
+            expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat(timespec="seconds")
+        with connect() as conn:
+            while conn.execute("SELECT 1 FROM bills WHERE qr_token = ?", (token,)).fetchone():
+                token = secrets.token_urlsafe(32)
+            conn.execute(
+                """
+                UPDATE bills
+                SET qr_token = ?, qr_token_status = 'active', qr_token_created_at = ?,
+                    qr_token_expires_at = ?
+                WHERE bill_id = ?
+                """,
+                (token, datetime.utcnow().isoformat(timespec="seconds"), str(expires_at), bill_id),
+            )
+    payload = parent_payment_url(token)
+    if bill_id in payload or normalize_text(bill.get("student_name")) in payload or normalize_text(bill.get("amount")) in payload:
+        raise ValueError("QR Code raw content 不可包含學生姓名、金額或 Bill ID。")
     QR_DIR.mkdir(exist_ok=True, parents=True)
     path = QR_DIR / f"{bill_id}.png"
     qrcode.make(payload).save(path)
@@ -183,7 +240,17 @@ def _draw_cell(c: canvas.Canvas, font: str, x: float, top: float, w: float, h: f
 def generate_receipt_pdf(bill_id: str) -> str:
     receipt_issue_date = date.today().isoformat()
     with connect() as conn:
-        bill = conn.execute("SELECT * FROM bills WHERE bill_id = ?", (bill_id,)).fetchone()
+        bill = conn.execute(
+            """
+            SELECT bills.*, COALESCE(students.department, '') AS department,
+                   programs.program_name, programs.program_category
+            FROM bills
+            LEFT JOIN students ON bills.student_id = students.student_id
+            LEFT JOIN programs ON bills.program_id = programs.program_id
+            WHERE bills.bill_id = ?
+            """,
+            (bill_id,),
+        ).fetchone()
         if not bill:
             raise ValueError(f"Bill not found: {bill_id}")
         bill = dict(bill)
@@ -204,6 +271,7 @@ def generate_receipt_pdf(bill_id: str) -> str:
         bill["receipt_issue_date"] = receipt_issue_date
 
     settings = get_settings()
+    watermark = parent_watermark(bill, settings)
     RECEIPT_DIR.mkdir(exist_ok=True, parents=True)
     path = RECEIPT_DIR / f"{bill['receipt_number']}.pdf"
     font = register_pdf_font()
@@ -256,16 +324,16 @@ def generate_receipt_pdf(bill_id: str) -> str:
         _draw_cell(c, font, table_x + label_w * 2 + value_w, top, value_w, row_h, right_value)
         return top - row_h
 
-    y = row(y, "收據號碼", bill["receipt_number"], "收據開立日期", receipt_issue_date)
-    y = row(y, "付款日期", bill["payment_date"] or "", "繳費期限", bill["due_date"])
-    y = row(y, "付款方式", payment_method, "帳單編號", bill["bill_id"])
-    y = row(y, "學生姓名", bill["student_name"], "班級", bill["class_name"])
-    y = row(y, "家長姓名", bill["parent_name"], "月份", bill["month"])
+    y = row(y, "收據號碼", bill["receipt_number"], "帳單編號", bill["bill_id"])
+    y = row(y, "收據開立日期", receipt_issue_date, "付款日期", bill["payment_date"] or "")
+    y = row(y, "部門", bill.get("department") or "", "班級", bill["class_name"])
+    y = row(y, "課程", bill.get("program_name") or bill["fee_item"], "學生姓名", mask_student_name(bill["student_name"]))
     y = row(y, "收費項目", bill["fee_item"], "金額", f"NT$ {int(bill['amount']):,}")
+    y = row(y, "付款方式", payment_method, "繳費期限", bill["due_date"])
 
     notes_h = 22 * mm
     _draw_cell(c, font, table_x, y, label_w, notes_h, "備註", "#F8FAFC")
-    _draw_cell(c, font, table_x + label_w, y, table_w - 16 * mm - label_w, notes_h, bill["notes"] or "")
+    _draw_cell(c, font, table_x + label_w, y, table_w - 16 * mm - label_w, notes_h, "")
     y -= notes_h + 12 * mm
 
     seal_size = 28 * mm
@@ -284,7 +352,7 @@ def generate_receipt_pdf(bill_id: str) -> str:
     c.roundRect(margin + 8 * mm, note_y, table_w - 16 * mm, 32 * mm, 3 * mm, fill=1, stroke=1)
     c.setFillColor(colors.HexColor("#111827"))
     c.setFont(font, 10.5)
-    c.drawString(margin + 13 * mm, note_y + 22 * mm, "本文件為數位收據，非統一發票。")
+    c.drawString(margin + 13 * mm, note_y + 22 * mm, "本收據為園方繳費紀錄憑證，非統一發票。")
     c.setFillColor(colors.HexColor("#475569"))
     c.setFont(font, 9)
     c.drawString(margin + 13 * mm, note_y + 14 * mm, settings["receipt_footer_text"])
@@ -293,6 +361,9 @@ def generate_receipt_pdf(bill_id: str) -> str:
     c.setFillColor(colors.HexColor("#111827"))
     c.setFont(font, 10)
     c.drawRightString(width - margin - 8 * mm, 31 * mm, f"經手人：{settings['responsible_person']}")
+    c.setFillColor(colors.HexColor("#94A3B8"))
+    c.setFont(font, 7)
+    c.drawCentredString(width / 2, 12 * mm, watermark)
     c.save()
 
     with connect() as conn:

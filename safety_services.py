@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 import hashlib
 from pathlib import Path
 import re
+import secrets
 
 import pandas as pd
 import qrcode
 
-from database import QR_DIR, connect, init_db, read_df
+from database import QR_DIR, connect, get_settings, init_db, read_df
 from models import MatchResult
 from services import (
     PAID,
@@ -16,7 +17,6 @@ from services import (
     UNPAID,
     generate_receipt_pdf as _base_generate_receipt_pdf,
     next_bill_id,
-    parent_payment_url,
 )
 from payment_services import (
     PAYMENT_AMOUNT_REVIEW,
@@ -134,6 +134,100 @@ def bill_qr_signature(bill: dict) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+def utc_now_text() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def token_expiry_for_bill(bill: dict) -> str:
+    due_date = str(bill.get("due_date") or "").strip()
+    if due_date:
+        try:
+            return datetime.fromisoformat(due_date).replace(hour=23, minute=59, second=59).isoformat(timespec="seconds")
+        except ValueError:
+            pass
+    settings = get_settings()
+    try:
+        days = int(settings.get("default_qr_token_valid_days") or 14)
+    except ValueError:
+        days = 14
+    return (datetime.utcnow() + timedelta(days=max(days, 1))).isoformat(timespec="seconds")
+
+
+def payment_base_url() -> str:
+    settings = get_settings()
+    base_url = str(settings.get("payment_page_base_url") or "").strip()
+    return base_url.rstrip("/")
+
+
+def parent_payment_url_for_token(token: str) -> str:
+    base_url = payment_base_url()
+    if base_url:
+        return f"{base_url}/?page=parent&token={token}"
+    return f"?page=parent&token={token}"
+
+
+def ensure_qr_token(bill: dict, regenerate: bool = False) -> str:
+    bill_id = str(bill.get("bill_id") or "").strip()
+    if not bill_id:
+        raise ValueError("QR token 必須綁定唯一 Bill ID。")
+    current_token = str(bill.get("qr_token") or "").strip()
+    current_status = str(bill.get("qr_token_status") or "active").strip()
+    if current_token and current_status == "active" and not regenerate:
+        return current_token
+
+    token = secrets.token_urlsafe(32)
+    now = utc_now_text()
+    expires_at = token_expiry_for_bill(bill)
+    with connect() as conn:
+        while conn.execute("SELECT 1 FROM bills WHERE qr_token = ?", (token,)).fetchone():
+            token = secrets.token_urlsafe(32)
+        if current_token and regenerate:
+            log_audit("QR token revoked", "bill", bill_id, f"Previous QR token revoked for bill {bill_id}.")
+        conn.execute(
+            """
+            UPDATE bills
+            SET qr_token = ?, qr_token_status = 'active', qr_token_created_at = ?,
+                qr_token_used_at = NULL, qr_token_expires_at = ?
+            WHERE bill_id = ?
+            """,
+            (token, now, expires_at, bill_id),
+        )
+    log_audit("QR token regenerated" if regenerate else "QR token created", "bill", bill_id, f"QR token active for bill {bill_id}.")
+    return token
+
+
+def mark_qr_token_used(bill_id: str) -> None:
+    now = utc_now_text()
+    with connect() as conn:
+        bill = conn.execute("SELECT qr_token_status FROM bills WHERE bill_id = ?", (bill_id,)).fetchone()
+        if not bill:
+            return
+        if bill["qr_token_status"] != "used":
+            conn.execute(
+                "UPDATE bills SET qr_token_status = 'used', qr_token_used_at = ? WHERE bill_id = ?",
+                (now, bill_id),
+            )
+            log_audit("QR token used", "bill", bill_id, f"QR token used for bill {bill_id}.")
+
+
+def expire_overdue_token(bill: dict) -> bool:
+    expires_at = str(bill.get("qr_token_expires_at") or "").strip()
+    status = str(bill.get("qr_token_status") or "active")
+    if not expires_at or status != "active":
+        return False
+    try:
+        expired = datetime.fromisoformat(expires_at) < datetime.utcnow()
+    except ValueError:
+        return False
+    if expired:
+        bill_id = str(bill.get("bill_id") or "")
+        with connect() as conn:
+            conn.execute("UPDATE bills SET qr_token_status = 'expired' WHERE bill_id = ?", (bill_id,))
+        log_audit("QR token expired", "bill", bill_id, f"QR token expired for bill {bill_id}.")
+        return True
+    return False
+
+
 def is_bill_stale(bill: dict) -> bool:
     if str(bill.get("status") or "") == CANCELLED:
         return True
@@ -177,9 +271,6 @@ def generate_qr_for_bill(bill: dict) -> str:
     bill_id = str(bill.get("bill_id") or "").strip()
     if not bill_id:
         raise ValueError("QR Code 必須綁定唯一 Bill ID，不能產生通用 QR Code。")
-    payload = parent_payment_url(bill_id)
-    if bill_id not in payload:
-        raise ValueError("QR Code payload 必須包含 Bill ID。")
 
     with connect() as conn:
         current = conn.execute("SELECT * FROM bills WHERE bill_id = ?", (bill_id,)).fetchone()
@@ -192,6 +283,10 @@ def generate_qr_for_bill(bill: dict) -> str:
     signature = bill_qr_signature(bill)
     old_signature = str(bill.get("qr_signature") or "")
     was_stale = int(bill.get("qr_stale") or 0) == 1 or bool(old_signature and old_signature != signature)
+    token = ensure_qr_token(bill, regenerate=was_stale)
+    payload = parent_payment_url_for_token(token)
+    if bill_id in payload or str(bill.get("student_name") or "") in payload or str(bill.get("amount") or "") in payload:
+        raise ValueError("QR Code raw content 不可包含學生姓名、金額或 Bill ID。")
 
     QR_DIR.mkdir(exist_ok=True, parents=True)
     path = QR_DIR / f"{bill_id}.png"
@@ -205,10 +300,39 @@ def generate_qr_for_bill(bill: dict) -> str:
     return str(path)
 
 
+def regenerate_qr_for_bill(bill: dict) -> str:
+    bill_id = str(bill.get("bill_id") or "").strip()
+    if not bill_id:
+        raise ValueError("QR Code 必須綁定唯一 Bill ID。")
+    with connect() as conn:
+        current = conn.execute("SELECT * FROM bills WHERE bill_id = ?", (bill_id,)).fetchone()
+    if current:
+        bill = dict(current)
+    if is_student_department_unconfirmed(bill):
+        log_department_block("QR regeneration", bill)
+        raise ValueError(department_unconfirmed_message())
+    token = ensure_qr_token(bill, regenerate=True)
+    payload = parent_payment_url_for_token(token)
+    QR_DIR.mkdir(exist_ok=True, parents=True)
+    path = QR_DIR / f"{bill_id}.png"
+    qrcode.make(payload).save(path)
+    with connect() as conn:
+        conn.execute(
+            "UPDATE bills SET qr_path = ?, qr_signature = ?, qr_stale = 0 WHERE bill_id = ?",
+            (str(path), bill_qr_signature(bill), bill_id),
+        )
+    log_audit("QR regenerated", "bill", bill_id, f"QR regenerated with a new token for bill {bill_id}.")
+    return str(path)
+
+
 def ensure_all_qr_codes() -> None:
     init_db()
     bills = read_df("SELECT * FROM bills")
     for bill in bills.to_dict("records"):
+        if bill.get("status") == PAID:
+            if bill.get("qr_token") and bill.get("qr_token_status") != "used":
+                mark_qr_token_used(bill["bill_id"])
+            continue
         qr_path = bill.get("qr_path")
         missing = pd.isna(qr_path) or not qr_path or not Path(str(qr_path)).exists()
         stale = is_bill_stale(bill)
@@ -275,6 +399,8 @@ def mark_bill_paid(bill_id: str, payment_date: str, notes: str | None = None) ->
             (PAID, PAYMENT_PAID, payment_date, payment_date, notes, bill_id),
         )
     log_audit("Payment auto matched", "bill", bill_id, f"Bill {bill_id} marked Paid on {payment_date}.")
+    log_audit("Payment fully confirmed", "bill", bill_id, f"Bill {bill_id} fully confirmed on {payment_date}.")
+    mark_qr_token_used(bill_id)
     generate_receipt_pdf(bill_id)
 
 
@@ -416,10 +542,13 @@ def import_and_reconcile(df: pd.DataFrame) -> pd.DataFrame:
             bill_status, payment_message = apply_payment_to_bill(result.bill_id, tx, final_status, batch_id, result.message)
             warning = payment_message
             if bill_status == PAID:
+                mark_qr_token_used(result.bill_id)
+                log_audit("Payment fully confirmed", "bill", result.bill_id, f"Bill {result.bill_id} fully confirmed by reconciliation.")
                 generate_receipt_pdf(result.bill_id)
                 final_status = "Matched"
             elif bill_status == UNPAID:
                 final_status = PAYMENT_PARTIAL
+                log_audit("Partial payment recorded", "bill", result.bill_id, f"Partial payment recorded for bill {result.bill_id}.")
             elif bill_status == PENDING:
                 final_status = PAYMENT_PENDING
         elif final_status == PENDING and result.bill_id:

@@ -148,6 +148,7 @@ def init_db() -> None:
                 message TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
             """
         )
 
@@ -180,6 +181,23 @@ def init_db() -> None:
             conn.execute("ALTER TABLE bills ADD COLUMN grace_until_date TEXT")
         if "last_payment_date" not in bill_columns:
             conn.execute("ALTER TABLE bills ADD COLUMN last_payment_date TEXT")
+        if "qr_token" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_token TEXT")
+        if "qr_token_status" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_status TEXT NOT NULL DEFAULT 'active'")
+        if "qr_token_created_at" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_created_at TEXT")
+        if "qr_token_used_at" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_used_at TEXT")
+        if "qr_token_expires_at" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_expires_at TEXT")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_bills_qr_token
+            ON bills(qr_token)
+            WHERE qr_token IS NOT NULL
+            """
+        )
         conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
         conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
         conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
@@ -287,6 +305,9 @@ def default_settings() -> dict[str, str]:
         "bank_account_text": "請匯款至園方官方帳戶：銀行 000，帳號 000-000-000000，戶名：晴禾幼兒園",
         "receipt_footer_text": "本收據供家長留存與園方對帳使用。",
         "responsible_person": "園方行政",
+        "payment_page_base_url": "",
+        "privacy_mode": "standard",
+        "default_qr_token_valid_days": "14",
     }
 
 

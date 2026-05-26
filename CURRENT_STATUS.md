@@ -51,6 +51,19 @@ Project: Kindergarten QR Payment & Digital Receipt System
 
 ## 2. Latest Changelog
 
+- Added privacy-preserving one-time QR token flow.
+- QR raw content now uses a payment URL with `token=<qr_token>` instead of readable student or payment details.
+- Added QR token lifecycle: active, used, expired, revoked.
+- Parent-facing payment page now validates token status before displaying bill details.
+- Parent-facing pages use masked student names by default.
+- Added watermark content to parent-facing pages, receipt preview, PDF receipt, and downloadable parent records.
+- Added dignity-focused wording for unpaid, partial payment, waiting reconciliation, and grace-period situations.
+- Added parent-facing download options after full payment confirmation:
+  - 下載繳費明細
+  - 下載電子收據 PDF
+  - 下載對帳確認紀錄
+- Added settings for payment page base URL, privacy mode, and default QR token validity period.
+- Improved Streamlit Cloud testing readiness: missing `data/`, QR folder, receipt folder, and SQLite database are created automatically.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園
@@ -90,16 +103,32 @@ Project: Kindergarten QR Payment & Digital Receipt System
 ## 3. Modified Files
 
 - `app.py`
-  - Added course templates, billing cycle labels, department filters, improved program UI, improved enrollment flow, and department-filtered bill creation.
+  - Added course templates, billing cycle labels, department filters, improved program UI, improved enrollment flow, department-filtered bill creation, token-based parent page, masked display, watermark, parent downloads, and new settings fields.
 - `database.py`
+  - Added safe migration columns for QR token lifecycle.
   - Updated default program/course seed data for common kindergarten, after-school, talent, and other service items.
   - Added a small migration correction for the default 書法班 fee.
+- `services.py`
+  - Added masked student name helper, parent-facing watermark helper, and privacy-aware PDF receipt output.
+- `safety_services.py`
+  - Added QR token creation, regeneration, expiration, and used-token handling.
+  - Updated QR generation to store only token URL content.
 - `CURRENT_STATUS.md`
   - Updated to reflect the current working version and latest changes.
 
 ## 4. Database / Schema Changes
 
-No new tables were added in the latest UI change.
+No new tables were added in the latest update.
+
+New columns added to `bills`:
+
+| Column | Purpose |
+|---|---|
+| qr_token | Secure one-time token used by QR payment URL |
+| qr_token_status | active / used / expired / revoked |
+| qr_token_created_at | Token creation timestamp |
+| qr_token_used_at | Timestamp when payment becomes fully confirmed |
+| qr_token_expires_at | Token expiration timestamp |
 
 Existing relevant tables:
 
@@ -143,6 +172,11 @@ Relevant program/payment fields include:
 | grace_until_date | Optional grace period date |
 | last_payment_date | Last payment date |
 | payment_status | Human-readable payment status |
+| qr_token | Secure one-time parent-facing QR token |
+| qr_token_status | active / used / expired / revoked |
+| qr_token_created_at | Token creation timestamp |
+| qr_token_used_at | Token used timestamp |
+| qr_token_expires_at | Token expiration timestamp |
 
 ### payment_records
 
@@ -164,6 +198,12 @@ Stores system action records.
 - Course setup is easier for standard use cases but still allows advanced/custom courses.
 - Enrollment and bill creation now use the same department/course filtering pattern.
 - Existing QR, reconciliation, receipt, payment safety, admin settings, and audit behavior remain unchanged.
+- QR codes now point to a one-time token URL. The QR raw content does not include full student name, parent name, class, amount, course detail, or payment status.
+- When a bill is fully paid, the token is marked `used` and re-opening the old QR shows a duplicate-payment-safe message.
+- Regenerating a QR revokes the old token and creates a new one.
+- Parent-facing pages show masked student names and gentle payment status wording.
+- Parent-facing confirmed payment pages provide downloadable payment detail, receipt PDF, and reconciliation confirmation records.
+- Receipt preview and PDF receipt use masked student names by default for parent-facing output.
 
 ## 6. How To Run The App
 
@@ -213,7 +253,64 @@ http://127.0.0.1:8501
 14. Use `快速編輯現有課程` to adjust a default fee or disable a course.
 15. Confirm old bills/enrollments are not deleted when a course is disabled.
 
-## 8. How To Test Enrollment And Bills
+## 8. QR Token Security, Privacy, And Parent-Facing Flow
+
+### QR token behavior
+
+- Each bill gets one secure `qr_token`.
+- QR image raw content should only contain a parent payment URL with `token=<qr_token>`.
+- The QR URL must not contain:
+  - full student name
+  - parent name
+  - class name
+  - phone number
+  - amount
+  - course details
+  - payment status
+- Token statuses:
+  - `active`: can open parent-facing bill confirmation page
+  - `used`: payment already fully confirmed
+  - `expired`: token validity period has passed
+  - `revoked`: admin regenerated QR and old token is no longer valid
+
+### Masked student name rules
+
+- 王明 -> 王O
+- 李正文 -> 李O文
+- 歐陽正文 -> 歐陽O文
+- David -> D****
+- Missing or unknown name -> 學生
+
+### Watermark behavior
+
+Parent-facing pages and downloadable documents include a watermark with:
+
+```text
+School name｜Department｜Class｜Course/service item｜Masked student name｜Bill ID｜Timestamp
+```
+
+The watermark does not use the full student name.
+
+### Dignity-focused wording
+
+Parent-facing pages avoid debt-collection wording and use language such as:
+
+- 尚未完成繳費確認
+- 已記錄部分付款
+- 園方已記錄繳費安排
+- 等待園方對帳確認
+- 如需協助，請與園方聯繫
+- 款項全額確認後，系統將產生正式收據
+
+### Confirmed payment downloads
+
+After full payment confirmation, the parent-facing page offers:
+
+- 下載繳費明細
+- 下載電子收據 PDF
+- 下載對帳確認紀錄
+
+## 9. How To Test Enrollment And Bills
 
 1. Go to `學生課程報名管理`.
 2. Select a student.
@@ -237,18 +334,51 @@ http://127.0.0.1:8501
     - Duplicate transaction should not double-post.
     - Fully paid bill can generate receipt.
 
-## 9. Known Limitations
+## 10. How To Test QR Token And Parent Privacy
+
+1. Create a new bill and generate QR.
+2. Confirm the bill has a `qr_token` and `qr_token_status = active`.
+3. Confirm QR payment URL uses `token=<qr_token>` and does not contain full student name or amount.
+4. Open the parent payment page using the token.
+5. Confirm the page shows:
+   - masked student name
+   - class
+   - department
+   - course/service item
+   - amount
+   - Bill ID
+   - watermark
+   - data safety warning
+6. Reconcile or manually mark the bill fully paid.
+7. Confirm:
+   - bill status is Paid
+   - `qr_token_status = used`
+   - `qr_token_used_at` is filled
+   - receipt is generated
+8. Re-open the same token URL.
+9. Confirm it shows:
+   - 此帳單已完成繳費確認，請勿重複付款。
+10. Regenerate QR from admin page.
+11. Confirm old token is revoked and the new QR uses a new token.
+12. Test partial payment.
+13. Confirm parent page shows partial-payment wording and does not generate official receipt PDF before full payment.
+14. Test grace period or promised payment date.
+15. Confirm wording remains gentle and does not show sensitive admin notes.
+16. Review audit log for QR access, token generation/regeneration, token used, payment confirmation, and parent downloads.
+
+## 11. Known Limitations
 
 - This is still a prototype, not a production accounting system.
 - Streamlit Community Cloud can run the demo, but SQLite local storage is not ideal for formal production data persistence.
 - SQLite on Streamlit Cloud is for testing only. For real operational use, migrate to an external database.
+- Web App 無法保證完全禁止截圖，但系統透過一次性 QR token、付款後失效、遮蔽姓名與浮水印降低截圖外流風險。
 - Existing old sample programs may still remain in the database because seed data uses insert-if-missing and does not delete old records.
 - The department filter is based on course name/category inference, not a dedicated department column in `programs`.
 - Real bank CSV formats still need a mapping/import setup for production use.
 - No real payment gateway, bank API, webhook, credit card processing, or parent login is implemented.
 - Streamlit may show `use_container_width` deprecation warnings; they do not currently block the app.
 
-## 10. Pending Backlog
+## 12. Pending Backlog
 
 Recommended next implementation order:
 

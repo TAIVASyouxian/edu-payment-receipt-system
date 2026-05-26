@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from database import RECEIPT_DIR, connect, get_settings, read_df, save_settings, seed_sample_data
-from services import PAID, PENDING, UNPAID, payment_reference, sample_bank_statement_path
+from services import PAID, PENDING, UNPAID, mask_student_name, parent_watermark, payment_reference, sample_bank_statement_path
 from safety_services import (
     AFTER_SCHOOL,
     CANCELLED,
@@ -18,6 +18,7 @@ from safety_services import (
     classify_department,
     classify_existing_students,
     ensure_all_qr_codes,
+    expire_overdue_token,
     generate_qr_for_bill,
     generate_receipt_pdf,
     import_and_reconcile,
@@ -26,6 +27,8 @@ from safety_services import (
     is_student_department_unconfirmed,
     log_audit,
     mark_bill_paid,
+    parent_payment_url_for_token,
+    regenerate_qr_for_bill,
 )
 from department_services import create_bills
 from program_services import active_enrollments_query, create_bills_from_enrollments, next_enrollment_id
@@ -978,15 +981,20 @@ def bills_page() -> None:
     department_unconfirmed = is_student_department_unconfirmed(bill)
     if department_unconfirmed:
         st.warning(department_unconfirmed_message())
-    if not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
+    if bill["status"] == PAID:
+        st.info("此帳單已完成繳費確認，QR 連結不再用於付款。")
+    elif not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
         bill["qr_path"] = generate_qr_for_bill(bill)
 
     c1, c2 = st.columns([1, 2])
     with c1:
-        if department_unconfirmed:
+        if bill["status"] == PAID:
+            st.info("已付款帳單不顯示付款 QR Code。")
+        elif department_unconfirmed:
             st.info("學生部門確認前，系統不提供 QR Code 重新產生或顯示。")
         elif bill.get("qr_path") and not pd.isna(bill.get("qr_path")) and Path(str(bill["qr_path"])).exists():
-            st.image(bill["qr_path"], caption=f"QR Code 已綁定 Bill ID：{bill['bill_id']}", width=230)
+            st.image(bill["qr_path"], caption="QR Code 已綁定一次性安全連結", width=230)
+            st.caption(f"Token 狀態：{bill.get('qr_token_status') or 'active'}")
         else:
             st.info("尚未產生 QR Code。")
     with c2:
@@ -1003,10 +1011,10 @@ def bills_page() -> None:
         st.markdown(f"**付款狀態：** {bill.get('payment_status') or STATUS_LABELS.get(bill['status'], bill['status'])}")
         st.markdown("**付款備註 / 轉帳附言**")
         st.code(payment_reference(bill), language="text")
-        if st.button("重新產生 QR Code", disabled=department_unconfirmed):
+        if st.button("重新產生 QR Code", disabled=department_unconfirmed or bill["status"] == PAID):
             try:
-                generate_qr_for_bill(bill)
-                st.success("QR Code 已重新產生，仍綁定同一 Bill ID。")
+                regenerate_qr_for_bill(bill)
+                st.success("QR Code 已重新產生，舊連結已失效。")
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
@@ -1117,64 +1125,146 @@ def bills_page() -> None:
         )
 
 
+def parent_bill_display(bill: dict) -> dict[str, str]:
+    settings = get_settings()
+    course = bill.get("program_name") if bill.get("program_name") and not pd.isna(bill.get("program_name")) else bill.get("fee_item")
+    return {
+        "school": settings["kindergarten_name"],
+        "department": str(bill.get("department") or bill.get("program_category") or ""),
+        "class_name": str(bill.get("class_name") or ""),
+        "course": str(course or ""),
+        "student": mask_student_name(bill.get("student_name")),
+        "bill_id": str(bill.get("bill_id") or ""),
+        "amount": money(bill.get("total_amount") or bill.get("amount")),
+        "watermark": parent_watermark(bill, settings),
+    }
+
+
+def parent_record_text(bill: dict, record_type: str) -> bytes:
+    display = parent_bill_display(bill)
+    lines = [
+        display["school"],
+        record_type,
+        "",
+        f"部門：{display['department']}",
+        f"班級：{display['class_name']}",
+        f"課程 / 項目：{display['course']}",
+        f"學生：{display['student']}",
+        f"帳單編號：{display['bill_id']}",
+        f"金額：{display['amount']}",
+        f"付款狀態：{bill.get('payment_status') or STATUS_LABELS.get(bill.get('status'), bill.get('status'))}",
+        f"付款確認時間：{bill.get('payment_date') or bill.get('last_payment_date') or ''}",
+        f"收據產生時間：{bill.get('receipt_issue_date') or ''}",
+        f"收據號碼：{bill.get('receipt_number') or ''}",
+        "",
+        "本文件供家長留存與園方對帳確認使用。",
+        f"浮水印：{display['watermark']}",
+    ]
+    return "\n".join(lines).encode("utf-8-sig")
+
+
 def parent_payment_page() -> None:
     st.title("家長繳費資訊確認")
-    bill_id = st.query_params.get("bill_id") or st.text_input("Bill ID")
-    if not bill_id:
-        st.info("請從 QR Code 開啟，或輸入 Bill ID。")
+    token = st.query_params.get("token")
+    if not token:
+        st.info("請從園方提供的 QR Code 或繳費連結開啟。")
         return
 
     bills = read_df(
         """
-        SELECT bills.*, programs.program_name, programs.program_category
+        SELECT bills.*, COALESCE(students.department, '') AS department,
+               programs.program_name, programs.program_category
         FROM bills
+        LEFT JOIN students ON bills.student_id = students.student_id
         LEFT JOIN programs ON bills.program_id = programs.program_id
-        WHERE bills.bill_id = ?
+        WHERE bills.qr_token = ?
         """,
-        (bill_id,),
+        (token or "",),
     )
     if bills.empty:
-        st.error("查無此帳單，請向園方確認最新繳費單。")
+        log_audit("invalid QR token access", "qr_token", token or "", "Invalid QR token accessed.")
+        st.error("此繳費連結已失效，請聯繫園方重新確認。")
         return
     bill = bills.iloc[0].to_dict()
     settings = get_settings()
+    display = parent_bill_display(bill)
+    token_status = str(bill.get("qr_token_status") or "active")
+    expired_now = expire_overdue_token(bill)
 
-    st.info("此頁面提供家長確認繳費資訊與收據留存使用。若近期有臨時狀況或繳費時間安排需求，請與園方聯繫，我們會協助確認後續處理方式。")
+    st.caption(display["watermark"])
+    st.warning("為保護資料安全，請勿轉傳此繳費連結或 QR Code。")
+    st.info("此頁面僅供家長確認繳費資訊使用。若您已付款，可能尚在對帳中；若近期需要繳費時間安排，請與園方聯繫，我們會協助確認。")
+
+    if bill["status"] == PAID:
+        log_audit("Paid bill QR accessed again", "bill", bill["bill_id"], f"Paid bill QR accessed again for {bill['bill_id']}.")
+        st.success("此帳單已完成繳費確認，請勿重複付款。")
+    elif expired_now or token_status in ["expired", "revoked"]:
+        log_audit("Invalid or expired QR token accessed", "bill", bill["bill_id"], f"Inactive QR token accessed for {bill['bill_id']}.")
+        st.error("此繳費連結已失效，請聯繫園方重新確認。")
+        return
+    elif token_status != "active":
+        log_audit("blocked duplicate QR access", "bill", bill["bill_id"], f"Blocked QR access for token status {token_status}.")
+        st.error("此繳費連結已失效，請聯繫園方重新確認。")
+        return
+    elif bill["status"] == CANCELLED or is_bill_stale(bill):
+        st.error("此繳費連結已失效，請聯繫園方重新確認。")
+        return
+    else:
+        log_audit("Parent payment page opened", "bill", bill["bill_id"], f"Parent payment page opened for {bill['bill_id']}.")
+
     if is_student_department_unconfirmed(bill):
         st.warning("此帳單資料仍在園方確認中，請先向園方確認最新繳費資訊。")
 
     payment_status = bill.get("payment_status") or STATUS_LABELS.get(bill["status"], bill["status"])
     if bill["status"] == PAID:
-        st.success("此帳單已完成繳費確認，請勿重複繳費。")
-        st.write(f"付款日期：{bill.get('payment_date') or '已確認'}")
+        log_audit("Confirmed payment page opened", "bill", bill["bill_id"], f"Confirmed payment page opened for {bill['bill_id']}.")
+        st.write(f"付款確認時間：{bill.get('payment_date') or bill.get('last_payment_date') or '已確認'}")
+        st.write(f"收據產生時間：{bill.get('receipt_issue_date') or '收據產生中'}")
         st.write(f"收據號碼：{bill.get('receipt_number') or '收據產生中'}")
     elif payment_status == "部分付款":
-        st.info("系統已記錄部分付款，待款項全額確認後將產生正式數位收據。")
-    elif payment_status == "寬限期中":
-        st.info("園方已記錄您的繳費時間安排，目前狀態為寬限期中。")
+        st.info("系統已記錄部分付款。待款項全額確認後，將產生正式數位收據。")
+    elif payment_status in ["寬限期中", "已約定補繳日"]:
+        st.info("園方已記錄您的繳費安排，請依約定時間完成即可。如需調整，請與園方聯繫。")
     elif bill["status"] == PENDING or payment_status in ["待對帳確認", "金額需確認", "溢付款需處理"]:
-        st.warning("此筆款項需園方進一步確認，請勿重複付款。")
-    elif bill["status"] == CANCELLED or is_bill_stale(bill):
-        st.error("此帳單已失效，請向園方確認最新繳費單。")
+        st.info("您的繳費資訊已送出，園方將於對帳後更新付款狀態。若您已完成轉帳，請保留交易紀錄以利查詢。")
     else:
         st.info("此項目目前尚未完成繳費確認。若您已付款，可能尚在對帳中；若需要延後繳費，請與園方聯繫。")
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("學生姓名", bill["student_name"])
-    c2.metric("班級", bill["class_name"])
-    c3.metric("金額", money(bill.get("total_amount") or bill["amount"]))
-    if bill.get("program_name") and not pd.isna(bill.get("program_name")):
-        st.markdown(f"### 課程：{bill['program_name']}（{bill.get('program_category') or ''}）")
-    st.markdown(f"### 收費項目：{bill['fee_item']}")
+    c1.metric("學生", display["student"])
+    c2.metric("班級", display["class_name"])
+    c3.metric("金額", display["amount"])
+    st.markdown(f"### 課程 / 項目：{display['course']}")
+    st.markdown(f"**部門：** {display['department']}")
     st.markdown(f"**帳單編號：** `{bill['bill_id']}`")
     st.markdown(f"**繳費期限：** {bill['due_date']}")
-    st.warning("請確認學生姓名、班級、金額與帳單編號正確後再付款。")
+    st.markdown(f"**狀態：** {payment_status}")
+    st.warning("請確認學生、班級、金額與帳單編號正確後再付款。")
 
     st.subheader("付款說明")
     st.write(settings["bank_account_text"])
     st.info("請透過幼兒園官方帳戶完成付款。本系統不處理、不代收、不保管任何款項。")
     st.markdown("**付款備註 / 轉帳附言**")
     st.code(payment_reference(bill), language="text")
+
+    if bill["status"] == PAID:
+        if not bill.get("receipt_path") or pd.isna(bill.get("receipt_path")) or not Path(str(bill.get("receipt_path"))).exists():
+            try:
+                generate_receipt_pdf(bill["bill_id"])
+                refreshed = read_df("SELECT * FROM bills WHERE bill_id = ?", (bill["bill_id"],))
+                if not refreshed.empty:
+                    bill.update(refreshed.iloc[0].to_dict())
+            except Exception:
+                pass
+        st.subheader("下載留存紀錄")
+        if st.download_button("下載繳費明細", data=parent_record_text(bill, "繳費明細"), file_name=f"{bill['bill_id']}_payment_detail.txt", mime="text/plain"):
+            log_audit("Parent downloads payment details", "bill", bill["bill_id"], f"Parent downloaded payment details for {bill['bill_id']}.")
+        receipt_path = bill.get("receipt_path")
+        if receipt_path and not pd.isna(receipt_path) and Path(str(receipt_path)).exists():
+            if st.download_button("下載電子收據 PDF", data=Path(str(receipt_path)).read_bytes(), file_name=f"{bill.get('receipt_number') or bill['bill_id']}.pdf", mime="application/pdf"):
+                log_audit("Parent downloads receipt PDF", "bill", bill["bill_id"], f"Parent downloaded receipt PDF for {bill['bill_id']}.")
+        if st.download_button("下載對帳確認紀錄", data=parent_record_text(bill, "對帳確認紀錄"), file_name=f"{bill['bill_id']}_reconciliation_confirmation.txt", mime="text/plain"):
+            log_audit("Parent downloads reconciliation confirmation record", "bill", bill["bill_id"], f"Parent downloaded reconciliation confirmation for {bill['bill_id']}.")
 
 
 def reconciliation_page() -> None:
@@ -1249,7 +1339,7 @@ def receipt_preview_html(bill: dict) -> str:
             <div class="receipt-label">收據開立日期</div><div class="receipt-value">{bill.get('receipt_issue_date') or '尚未產生'}</div>
             <div class="receipt-label">付款日期</div><div class="receipt-value">{bill.get('payment_date') or ''}</div>
             <div class="receipt-label">繳費期限</div><div class="receipt-value">{bill.get('due_date') or ''}</div>
-            <div class="receipt-label">學生姓名</div><div class="receipt-value">{bill.get('student_name') or ''}</div>
+            <div class="receipt-label">學生姓名</div><div class="receipt-value">{mask_student_name(bill.get('student_name'))}</div>
             <div class="receipt-label">班級</div><div class="receipt-value">{bill.get('class_name') or ''}</div>
             <div class="receipt-label">課程</div><div class="receipt-value">{bill.get('program_name') if bill.get('program_name') and not pd.isna(bill.get('program_name')) else bill.get('fee_item') or ''}</div>
             <div class="receipt-label">課程類別</div><div class="receipt-value">{bill.get('program_category') if bill.get('program_category') and not pd.isna(bill.get('program_category')) else ''}</div>
@@ -1263,6 +1353,7 @@ def receipt_preview_html(bill: dict) -> str:
         <div class="seal-box">園方章</div>
         <p><strong>本文件為數位收據，非統一發票。</strong></p>
         <p>本收據供家長留存與園方對帳使用。</p>
+        <p class="calm-note">{parent_watermark(bill, settings)}</p>
     </div>
     """
 
@@ -1374,8 +1465,17 @@ def settings_page() -> None:
         bank_account_text = st.text_area("銀行 / 支付帳戶顯示文字", settings["bank_account_text"], height=100)
         receipt_footer_text = st.text_area("收據頁尾文字", settings["receipt_footer_text"], height=80)
         responsible_person = st.text_input("經手人 / 負責人顯示文字", settings["responsible_person"])
+        payment_page_base_url = st.text_input("付款頁 Base URL（Streamlit Cloud 網址，可留空使用相對連結）", settings.get("payment_page_base_url", ""))
+        privacy_mode = st.selectbox(
+            "隱私模式",
+            ["standard", "admin_full"],
+            index=["standard", "admin_full"].index(settings.get("privacy_mode", "standard")) if settings.get("privacy_mode", "standard") in ["standard", "admin_full"] else 0,
+            format_func=lambda value: "標準隱私模式（家長端遮蔽姓名）" if value == "standard" else "管理端完整檢視",
+        )
+        default_qr_token_valid_days = st.number_input("預設 QR token 有效天數（無繳費期限時使用）", min_value=1, max_value=90, value=int(settings.get("default_qr_token_valid_days", "14") or 14), step=1)
         st.file_uploader("Logo 上傳預留欄位（V1 僅預留，不儲存）", type=["png", "jpg", "jpeg"])
         if st.form_submit_button("儲存設定"):
+            old_privacy_mode = settings.get("privacy_mode", "standard")
             save_settings(
                 {
                     "kindergarten_name": kindergarten_name,
@@ -1385,8 +1485,13 @@ def settings_page() -> None:
                     "bank_account_text": bank_account_text,
                     "receipt_footer_text": receipt_footer_text,
                     "responsible_person": responsible_person,
+                    "payment_page_base_url": payment_page_base_url,
+                    "privacy_mode": privacy_mode,
+                    "default_qr_token_valid_days": str(default_qr_token_valid_days),
                 }
             )
+            if old_privacy_mode != privacy_mode:
+                log_audit("Admin switches between masked/full-name view", "settings", "privacy_mode", f"Privacy mode changed from {old_privacy_mode} to {privacy_mode}.")
             st.success("設定已儲存。")
             st.rerun()
     st.download_button("匯出帳單、收據與付款紀錄備份", data=build_receipt_backup_zip(), file_name=f"kindergarten_backup_{date.today().isoformat()}.zip", mime="application/zip")
