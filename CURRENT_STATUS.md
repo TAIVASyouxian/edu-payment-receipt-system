@@ -68,6 +68,10 @@ Project: Kindergarten QR Payment & Digital Receipt System
 - To reduce SQLite locking on Streamlit Cloud, automatic QR token repair no longer runs on every rerun. Use 管理設定 -> 系統維護 -> 修復 / 補齊 QR Token when needed.
 - Official QR Codes require 管理設定 -> 付款頁 Base URL. QR raw content must be a full URL like `<payment_page_base_url>/?page=parent&token=<qr_token>`; the app no longer falls back to a relative `?page=parent&token=...` QR payload.
 - Parent payment page now uses a mobile-first responsive layout for QR scanning.
+- Updated predefined kindergarten course/service items:
+  - Added 幼兒足球班, 流行音樂鍵盤班, 外師 Josh 繪本班, 幼兒桌遊班.
+  - Added 幼兒晚餐費, 幼兒延托費, 幼兒臨時延托費, 幼兒加時照顧費.
+  - These items appear under 幼兒園 filtering and use categories 幼兒園才藝 / 幼兒園延伸照顧.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園
@@ -108,9 +112,11 @@ Project: Kindergarten QR Payment & Digital Receipt System
 
 - `app.py`
   - Added course templates, billing cycle labels, department filters, improved program UI, improved enrollment flow, department-filtered bill creation, token-based parent page, masked display, watermark, parent downloads, and new settings fields.
+  - Added new kindergarten talent and extended-care service items to the predefined course dropdowns.
 - `database.py`
   - Added safe migration columns for QR token lifecycle.
   - Updated default program/course seed data for common kindergarten, after-school, talent, and other service items.
+  - Added new default seed rows for kindergarten talent and extended-care service items.
   - Added a small migration correction for the default 書法班 fee.
 - `services.py`
   - Added masked student name helper, parent-facing watermark helper, and privacy-aware PDF receipt output.

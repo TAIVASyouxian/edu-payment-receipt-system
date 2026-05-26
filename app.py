@@ -327,6 +327,14 @@ COURSE_TEMPLATES = {
         {"program_id": "PRG-KG-TRANSPORT", "program_name": "幼兒園交通費", "program_category": "交通", "default_fee_amount": 2000, "billing_cycle": "monthly"},
         {"program_id": "PRG-KG-ACTIVITY", "program_name": "幼兒園活動費", "program_category": "幼兒園", "default_fee_amount": 800, "billing_cycle": "one-time"},
         {"program_id": "PRG-KG-OTHER", "program_name": "幼兒園其他費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
+        {"program_id": "PRG-KG-SOCCER", "program_name": "幼兒足球班", "program_category": "幼兒園才藝", "default_fee_amount": 0, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-POP-KEYBOARD", "program_name": "流行音樂鍵盤班", "program_category": "幼兒園才藝", "default_fee_amount": 0, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-JOSH-STORYBOOK", "program_name": "外師 Josh 繪本班", "program_category": "幼兒園才藝", "default_fee_amount": 0, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-BOARDGAME", "program_name": "幼兒桌遊班", "program_category": "幼兒園才藝", "default_fee_amount": 0, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-DINNER", "program_name": "幼兒晚餐費", "program_category": "幼兒園延伸照顧", "default_fee_amount": 0, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-EXTENDED-CARE", "program_name": "幼兒延托費", "program_category": "幼兒園延伸照顧", "default_fee_amount": 0, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-TEMP-EXTENDED-CARE", "program_name": "幼兒臨時延托費", "program_category": "幼兒園延伸照顧", "default_fee_amount": 0, "billing_cycle": "one-time"},
+        {"program_id": "PRG-KG-OVERTIME-CARE", "program_name": "幼兒加時照顧費", "program_category": "幼兒園延伸照顧", "default_fee_amount": 0, "billing_cycle": "one-time"},
     ],
     "安親班": [
         {"program_id": "PRG-AFTERSCHOOL", "program_name": "一般安親班", "program_category": "一般平日安親班", "default_fee_amount": 8000, "billing_cycle": "monthly"},
@@ -390,7 +398,7 @@ def template_by_name(department: str, course_name: str) -> dict:
 def infer_program_department(row: object) -> str:
     name = str(getattr(row, "program_name", "") or row.get("program_name", "") if isinstance(row, dict) else "")
     category = str(getattr(row, "program_category", "") or row.get("program_category", "") if isinstance(row, dict) else "")
-    if name.startswith("幼兒園") or category == "幼兒園":
+    if name.startswith("幼兒園") or name.startswith("幼兒") or category in ["幼兒園", "幼兒園才藝", "幼兒園延伸照顧"]:
         return "幼兒園"
     if name.startswith("安親") or "安親" in name or category in ["安親班", "一般平日安親班", "安親延伸課程"]:
         return "安親班"
@@ -710,7 +718,7 @@ def programs_page() -> None:
                 program_id = c1.text_input("課程 ID", placeholder="PRG-CUSTOM")
                 program_name = c2.text_input("課程 / 服務名稱")
                 c3, c4, c5 = st.columns(3)
-                program_category = c3.selectbox("類別", ["幼兒園", "一般平日安親班", "安親延伸課程", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
+                program_category = c3.selectbox("類別", ["幼兒園", "幼兒園才藝", "幼兒園延伸照顧", "一般平日安親班", "安親延伸課程", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
                 default_fee_amount = c4.number_input("預設金額", min_value=0, value=0, step=100)
                 billing_cycle = c5.selectbox("收費週期", BILLING_CYCLE_OPTIONS, format_func=billing_cycle_label)
             else:
@@ -789,7 +797,7 @@ def programs_page() -> None:
             column_config={
                 "program_id": "課程 ID",
                 "program_name": "課程 / 服務名稱",
-                "program_category": st.column_config.SelectboxColumn("類別", options=["幼兒園", "一般平日安親班", "安親延伸課程", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"]),
+                "program_category": st.column_config.SelectboxColumn("類別", options=["幼兒園", "幼兒園才藝", "幼兒園延伸照顧", "一般平日安親班", "安親延伸課程", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"]),
                 "default_fee_amount": st.column_config.NumberColumn("預設金額", min_value=0, step=100),
                 "billing_cycle": st.column_config.SelectboxColumn("收費週期", options=BILLING_CYCLE_OPTIONS),
                 "status": st.column_config.SelectboxColumn("狀態", options=["active", "inactive"]),
