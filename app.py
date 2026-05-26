@@ -1136,7 +1136,10 @@ def bills_page() -> None:
     if bill["status"] == PAID:
         st.info("此帳單已完成繳費確認，QR 連結不再用於付款。")
     elif payment_base_url and not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
-        bill["qr_path"] = generate_qr_for_bill(bill)
+        try:
+            bill["qr_path"] = generate_qr_for_bill(bill)
+        except ValueError as exc:
+            st.warning(str(exc))
 
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -1176,6 +1179,8 @@ def bills_page() -> None:
                 regenerate_qr_for_bill(bill)
                 st.success("QR Code 已重新產生，舊連結已失效。")
                 st.rerun()
+            except ValueError as exc:
+                st.warning(str(exc))
             except Exception as exc:
                 st.error(str(exc))
 

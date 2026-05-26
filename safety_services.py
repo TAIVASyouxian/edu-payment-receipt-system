@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import re
 import secrets
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import qrcode
@@ -180,12 +181,54 @@ def parent_payment_url_for_token(token: str) -> str:
     return f"{base_url}/?page=parent&token={token}"
 
 
+def _sensitive_qr_values(bill: dict) -> list[str]:
+    values = [
+        bill.get("bill_id"),
+        bill.get("student_name"),
+        bill.get("parent_name"),
+        bill.get("class_name"),
+        bill.get("fee_item"),
+        bill.get("program_name"),
+        bill.get("program_category"),
+        bill.get("payment_note"),
+        bill.get("amount"),
+        bill.get("total_amount"),
+    ]
+    sensitive = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in {"0", "0.0"}:
+            sensitive.append(text)
+    return sensitive
+
+
+def _token_exposes_bill_data(token: str, bill: dict) -> bool:
+    token = str(token or "").strip()
+    if not token:
+        return True
+    return any(value and value in token for value in _sensitive_qr_values(bill))
+
+
+def _validate_qr_payload(payload: str, token: str, bill: dict) -> None:
+    parsed = urlparse(payload)
+    query = parse_qs(parsed.query)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("QR Code 內容必須是完整付款頁網址。")
+    if set(query.keys()) != {"page", "token"} or query.get("page", [""])[0] != "parent" or query.get("token", [""])[0] != token:
+        raise ValueError("QR Code 內容必須只包含一次性 token 付款連結。")
+    for value in _sensitive_qr_values(bill):
+        if value and value in payload:
+            raise ValueError("QR Code raw content 不可包含學生姓名、班級、課程、金額、付款備註或 Bill ID。")
+
+
 def ensure_qr_token(bill: dict, regenerate: bool = False) -> str:
     bill_id = str(bill.get("bill_id") or "").strip()
     if not bill_id:
         raise ValueError("QR token 必須綁定唯一 Bill ID。")
     current_token = str(bill.get("qr_token") or "").strip()
     current_status = str(bill.get("qr_token_status") or "active").strip()
+    if _token_exposes_bill_data(current_token, bill):
+        regenerate = True
     if current_token and current_status == "active" and not regenerate:
         return current_token
 
@@ -193,7 +236,7 @@ def ensure_qr_token(bill: dict, regenerate: bool = False) -> str:
     now = utc_now_text()
     expires_at = token_expiry_for_bill(bill)
     with connect() as conn:
-        while conn.execute("SELECT 1 FROM bills WHERE qr_token = ?", (token,)).fetchone():
+        while _token_exposes_bill_data(token, bill) or conn.execute("SELECT 1 FROM bills WHERE qr_token = ?", (token,)).fetchone():
             token = secrets.token_urlsafe(32)
         if current_token and regenerate:
             log_audit("QR token revoked", "bill", bill_id, f"Previous QR token revoked for bill {bill_id}.")
@@ -299,8 +342,7 @@ def generate_qr_for_bill(bill: dict) -> str:
     was_stale = int(bill.get("qr_stale") or 0) == 1 or bool(old_signature and old_signature != signature)
     token = ensure_qr_token(bill, regenerate=was_stale)
     payload = parent_payment_url_for_token(token)
-    if bill_id in payload or str(bill.get("student_name") or "") in payload or str(bill.get("amount") or "") in payload:
-        raise ValueError("QR Code raw content 不可包含學生姓名、金額或 Bill ID。")
+    _validate_qr_payload(payload, token, bill)
 
     QR_DIR.mkdir(exist_ok=True, parents=True)
     path = QR_DIR / f"{bill_id}.png"
@@ -327,6 +369,7 @@ def regenerate_qr_for_bill(bill: dict) -> str:
         raise ValueError(department_unconfirmed_message())
     token = ensure_qr_token(bill, regenerate=True)
     payload = parent_payment_url_for_token(token)
+    _validate_qr_payload(payload, token, bill)
     QR_DIR.mkdir(exist_ok=True, parents=True)
     path = QR_DIR / f"{bill_id}.png"
     qrcode.make(payload).save(path)
