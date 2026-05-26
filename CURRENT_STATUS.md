@@ -241,6 +241,7 @@ http://127.0.0.1:8501
 
 - This is still a prototype, not a production accounting system.
 - Streamlit Community Cloud can run the demo, but SQLite local storage is not ideal for formal production data persistence.
+- SQLite on Streamlit Cloud is for testing only. For real operational use, migrate to an external database.
 - Existing old sample programs may still remain in the database because seed data uses insert-if-missing and does not delete old records.
 - The department filter is based on course name/category inference, not a dedicated department column in `programs`.
 - Real bank CSV formats still need a mapping/import setup for production use.
@@ -279,3 +280,4 @@ The system developer does not receive, store, manage, or process money.
 Accounting, tax, refund, and legal receipt content must be confirmed by the kindergarten and its accountant.
 This system is not an e-invoice system.
 V1 does not connect to real banking or payment APIs.
+SQLite on Streamlit Cloud is for testing only. For real operational use, migrate to an external database.

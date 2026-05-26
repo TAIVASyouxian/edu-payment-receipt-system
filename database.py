@@ -190,6 +190,14 @@ def init_db() -> None:
         student_columns = {row["name"] for row in conn.execute("PRAGMA table_info(students)").fetchall()}
         if "department" not in student_columns:
             conn.execute("ALTER TABLE students ADD COLUMN department TEXT NOT NULL DEFAULT '待確認'")
+        conn.executemany(
+            """
+            INSERT INTO settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            list(default_settings().items()),
+        )
         _seed_default_programs(conn)
 
 
