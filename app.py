@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import html
 import io
 from pathlib import Path
 import zipfile
@@ -145,6 +146,57 @@ CSS = """
         margin-left: auto;
         margin-top: 22px;
         font-weight: 700;
+    }
+    .parent-detail-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 18px 0 12px 0;
+    }
+    .parent-detail-card {
+        background: #fffdf8;
+        border: 1px solid #d7d1c6;
+        border-radius: 12px;
+        padding: 14px 16px;
+        box-shadow: 0 6px 18px rgba(44, 52, 49, 0.05);
+    }
+    .parent-detail-label {
+        color: #4b5563;
+        font-size: 14px;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+    .parent-detail-value {
+        color: #1f2933;
+        font-size: 24px;
+        font-weight: 800;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+    }
+    .parent-summary {
+        background: #fffdf8;
+        border: 1px solid #d7d1c6;
+        border-radius: 12px;
+        padding: 14px 16px;
+        margin: 10px 0 16px 0;
+        color: #1f2933;
+        line-height: 1.7;
+    }
+    .parent-summary strong { color: #273331; font-weight: 800; }
+    @media (max-width: 640px) {
+        .parent-detail-grid {
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+        .parent-detail-card {
+            padding: 13px 14px;
+        }
+        .parent-detail-label {
+            font-size: 13px;
+        }
+        .parent-detail-value {
+            font-size: 22px;
+        }
     }
 </style>
 """
@@ -1175,6 +1227,24 @@ def parent_record_text(bill: dict, record_type: str) -> bytes:
     return "\n".join(lines).encode("utf-8-sig")
 
 
+def render_parent_detail_cards(display: dict[str, str]) -> None:
+    cards = [
+        ("學生", display["student"]),
+        ("班級", display["class_name"]),
+        ("金額", display["amount"]),
+    ]
+    html_cards = "".join(
+        f"""
+        <div class="parent-detail-card">
+            <div class="parent-detail-label">{html.escape(label)}</div>
+            <div class="parent-detail-value">{html.escape(str(value))}</div>
+        </div>
+        """
+        for label, value in cards
+    )
+    st.markdown(f'<div class="parent-detail-grid">{html_cards}</div>', unsafe_allow_html=True)
+
+
 def parent_payment_page() -> None:
     st.title("家長繳費資訊確認")
     token = st.query_params.get("token")
@@ -1242,15 +1312,19 @@ def parent_payment_page() -> None:
     else:
         st.info("此項目目前尚未完成繳費確認。若您已付款，可能尚在對帳中；若需要延後繳費，請與園方聯繫。")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("學生", display["student"])
-    c2.metric("班級", display["class_name"])
-    c3.metric("金額", display["amount"])
-    st.markdown(f"### 課程 / 項目：{display['course']}")
-    st.markdown(f"**部門：** {display['department']}")
-    st.markdown(f"**帳單編號：** `{bill['bill_id']}`")
-    st.markdown(f"**繳費期限：** {bill['due_date']}")
-    st.markdown(f"**狀態：** {payment_status}")
+    render_parent_detail_cards(display)
+    st.markdown(
+        f"""
+        <div class="parent-summary">
+            <div><strong>課程 / 項目：</strong>{html.escape(display['course'])}</div>
+            <div><strong>部門：</strong>{html.escape(display['department'])}</div>
+            <div><strong>帳單編號：</strong>{html.escape(str(bill['bill_id']))}</div>
+            <div><strong>繳費期限：</strong>{html.escape(str(bill['due_date']))}</div>
+            <div><strong>狀態：</strong>{html.escape(str(payment_status))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.warning("請確認學生、班級、金額與帳單編號正確後再付款。")
 
     st.subheader("付款說明")
