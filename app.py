@@ -9,7 +9,7 @@ import zipfile
 import pandas as pd
 import streamlit as st
 
-from database import RECEIPT_DIR, connect, get_settings, read_df, save_settings, seed_sample_data
+from database import DATA_DIR, RECEIPT_DIR, connect, get_settings, read_df, save_settings, seed_sample_data
 from services import PAID, PENDING, UNPAID, mask_student_name, parent_watermark, payment_reference, sample_bank_statement_path
 from safety_services import (
     AFTER_SCHOOL,
@@ -386,6 +386,14 @@ def table_status_chinese(df: pd.DataFrame) -> pd.DataFrame:
 
 def billing_cycle_label(value: object) -> str:
     return BILLING_CYCLE_LABELS.get(str(value or ""), str(value or ""))
+
+
+def parent_transfer_memo(bill: dict) -> str:
+    bill_id = str(bill.get("bill_id") or "").strip()
+    course = str(bill.get("program_name") or bill.get("fee_item") or "").strip()
+    if course and course not in bill_id:
+        return f"{bill_id} {course}"
+    return bill_id
 
 
 def template_by_name(department: str, course_name: str) -> dict:
@@ -1135,7 +1143,12 @@ def bills_page() -> None:
         st.warning("請先到管理設定填寫付款頁基礎網址，再產生正式 QR Code。")
     if bill["status"] == PAID:
         st.info("此帳單已完成繳費確認，QR 連結不再用於付款。")
-    elif payment_base_url and not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
+    elif payment_base_url and not department_unconfirmed and (
+        not bill.get("qr_token")
+        or not bill.get("qr_path")
+        or pd.isna(bill.get("qr_path"))
+        or not Path(str(bill["qr_path"])).exists()
+    ):
         try:
             bill["qr_path"] = generate_qr_for_bill(bill)
         except ValueError as exc:
@@ -1468,8 +1481,9 @@ def parent_payment_page() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.markdown("**付款備註 / 轉帳附言**")
-    st.code(payment_reference(bill), language="text")
+    st.markdown("**轉帳備註建議填寫**")
+    st.code(parent_transfer_memo(bill), language="text")
+    st.caption("為方便園方對帳，請於轉帳備註填寫上方帳單編號。")
 
     if bill["status"] == PAID:
         if not bill.get("receipt_path") or pd.isna(bill.get("receipt_path")) or not Path(str(bill.get("receipt_path"))).exists():
@@ -1495,6 +1509,21 @@ def parent_payment_page() -> None:
 def reconciliation_page() -> None:
     st.title("CSV 匯入與自動對帳")
     st.caption("CSV 欄位：transaction_date, amount, payer_name, payment_note, transaction_id")
+    with st.expander("CSV 欄位對應說明", expanded=False):
+        st.markdown(
+            """
+            上傳 CSV 前請確認至少包含以下必要欄位：
+
+            - `transaction_date`：交易日期
+            - `amount`：交易金額
+            - `payment_note`：付款備註，建議包含帳單編號
+            - `transaction_id`：銀行或支付平台交易編號
+
+            選填欄位：
+
+            - `payer_name`：付款人或匯款人名稱。如果銀行檔案沒有此欄位，系統會以空白處理。
+            """
+        )
     st.download_button(
         "下載範例 CSV",
         data=Path(sample_bank_statement_path()).read_bytes(),
@@ -1506,7 +1535,11 @@ def reconciliation_page() -> None:
         df = pd.read_csv(upload)
         st.subheader("匯入預覽")
         st.dataframe(df, hide_index=True, use_container_width=True)
-        if st.button("開始對帳"):
+        required = ["transaction_date", "amount", "payment_note", "transaction_id"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            st.warning(f"CSV 缺少必要欄位：{', '.join(missing)}")
+        if st.button("開始對帳", disabled=bool(missing)):
             try:
                 result = import_and_reconcile(df)
                 display = table_status_chinese(result).rename(
@@ -1547,6 +1580,129 @@ def build_receipt_backup_zip() -> bytes:
         zf.writestr("payment_arrangements.csv", payment_arrangements.to_csv(index=False, encoding="utf-8-sig"))
         zf.writestr("programs.csv", programs.to_csv(index=False, encoding="utf-8-sig"))
         zf.writestr("enrollments.csv", enrollments.to_csv(index=False, encoding="utf-8-sig"))
+    return buffer.getvalue()
+
+
+def clear_qa_test_data() -> None:
+    with connect() as conn:
+        qa_bill_ids = [row["bill_id"] for row in conn.execute("SELECT bill_id FROM bills WHERE student_id LIKE 'QA-%'").fetchall()]
+        for bill_id in qa_bill_ids:
+            conn.execute("DELETE FROM payment_records WHERE bill_id = ?", (bill_id,))
+            conn.execute("DELETE FROM payment_arrangements WHERE bill_id = ?", (bill_id,))
+            conn.execute("DELETE FROM transactions WHERE matched_bill_id = ?", (bill_id,))
+        conn.execute("DELETE FROM transactions WHERE transaction_id LIKE 'QA-%'")
+        conn.execute("DELETE FROM bills WHERE student_id LIKE 'QA-%'")
+        conn.execute("DELETE FROM enrollments WHERE enrollment_id LIKE 'QA-%' OR student_id LIKE 'QA-%' OR program_id LIKE 'QA-%'")
+        conn.execute("DELETE FROM programs WHERE program_id LIKE 'QA-%'")
+        conn.execute("DELETE FROM students WHERE student_id LIKE 'QA-%'")
+    log_audit("QA test data cleared", "maintenance", "QA", "QA test data with QA-* IDs was cleared.")
+
+
+def create_qa_test_data() -> list[Path]:
+    clear_qa_test_data()
+    qa_dir = DATA_DIR / "qa"
+    qa_dir.mkdir(exist_ok=True)
+    students = [
+        ("QA-STU-001", "測試幼兒一", "太陽班", "幼兒園", "QA家長一", "qa1@example.com", "active"),
+        ("QA-STU-002", "測試安親二", "小二課輔", "安親班", "QA家長二", "qa2@example.com", "active"),
+        ("QA-STU-003", "測試才藝三", "才藝班", "才藝班", "QA家長三", "qa3@example.com", "active"),
+    ]
+    programs = [
+        ("QA-PRG-KG-MONTHLY", "QA幼兒園月費", "幼兒園", 8500, "monthly", "active", "QA測試課程"),
+        ("QA-PRG-AFTER-ENGLISH", "QA安親兒童美語", "安親延伸課程", 3000, "monthly", "active", "QA測試課程"),
+        ("QA-PRG-WEEKEND-ART", "QA假日美術班", "假日才藝", 2800, "monthly", "active", "QA測試課程"),
+    ]
+    enrollments = [
+        ("QA-ENR-001", "QA-STU-001", "QA-PRG-KG-MONTHLY", "2026-05-01", None, "active", None, "QA測試報名"),
+        ("QA-ENR-002", "QA-STU-002", "QA-PRG-AFTER-ENGLISH", "2026-05-01", None, "active", None, "QA測試報名"),
+        ("QA-ENR-003", "QA-STU-003", "QA-PRG-WEEKEND-ART", "2026-05-01", None, "active", None, "QA測試報名"),
+    ]
+    bills = [
+        ("KG-209901-9001", "QA-STU-001", "QA-PRG-KG-MONTHLY", "QA-ENR-001", "測試幼兒一", "太陽班", "QA家長一", "2099-01", "2099-01", "QA幼兒園月費", 8500, "2099-01-20", UNPAID, UNPAID, 8500, 0, 8500, "QA exact match"),
+        ("KG-209901-9002", "QA-STU-002", "QA-PRG-AFTER-ENGLISH", "QA-ENR-002", "測試安親二", "小二課輔", "QA家長二", "2099-01", "2099-01", "QA安親兒童美語", 3000, "2099-01-20", UNPAID, UNPAID, 3000, 0, 3000, "QA partial payment"),
+        ("KG-209901-9003", "QA-STU-003", "QA-PRG-WEEKEND-ART", "QA-ENR-003", "測試才藝三", "才藝班", "QA家長三", "2099-01", "2099-01", "QA假日美術班", 2800, "2099-01-20", UNPAID, UNPAID, 2800, 0, 2800, "QA error cases"),
+    ]
+    with connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO students(student_id, student_name, class_name, department, parent_name, contact, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            students,
+        )
+        conn.executemany(
+            """
+            INSERT INTO programs(program_id, program_name, program_category, default_fee_amount, billing_cycle, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            programs,
+        )
+        conn.executemany(
+            """
+            INSERT INTO enrollments(enrollment_id, student_id, program_id, start_date, end_date, enrollment_status, custom_fee_amount, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            enrollments,
+        )
+        conn.executemany(
+            """
+            INSERT INTO bills(
+                bill_id, student_id, program_id, enrollment_id, student_name, class_name, parent_name,
+                month, billing_month, fee_item, amount, due_date, status, payment_status,
+                total_amount, paid_amount, remaining_amount, notes, qr_stale
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            bills,
+        )
+    qa_files = {
+        "qa_students.csv": pd.DataFrame(students, columns=["student_id", "student_name", "class_name", "department", "parent_name", "contact", "status"]),
+        "qa_programs.csv": pd.DataFrame(programs, columns=["program_id", "program_name", "program_category", "default_fee_amount", "billing_cycle", "status", "notes"]),
+        "qa_enrollments.csv": pd.DataFrame(enrollments, columns=["enrollment_id", "student_id", "program_id", "start_date", "end_date", "enrollment_status", "custom_fee_amount", "notes"]),
+        "qa_bank_exact_match.csv": pd.DataFrame([
+            {"transaction_date": "2099-01-10", "amount": 8500, "payer_name": "QA家長一", "payment_note": "KG-209901-9001", "transaction_id": "QA-TX-EXACT-001"},
+        ]),
+        "qa_bank_partial_payment.csv": pd.DataFrame([
+            {"transaction_date": "2099-01-11", "amount": 1000, "payer_name": "QA家長二", "payment_note": "KG-209901-9002", "transaction_id": "QA-TX-PARTIAL-001"},
+            {"transaction_date": "2099-01-12", "amount": 2000, "payer_name": "QA家長二", "payment_note": "KG-209901-9002", "transaction_id": "QA-TX-PARTIAL-002"},
+        ]),
+        "qa_bank_error_cases.csv": pd.DataFrame([
+            {"transaction_date": "2099-01-13", "amount": 9999, "payer_name": "QA家長三", "payment_note": "KG-209901-9003", "transaction_id": "QA-TX-ERROR-001"},
+            {"transaction_date": "2099-01-13", "amount": 2800, "payer_name": "QA家長三", "payment_note": "KG-209901-9003", "transaction_id": "QA-TX-ERROR-001"},
+            {"transaction_date": "2099-01-14", "amount": 1234, "payer_name": "未知家長", "payment_note": "沒有帳單編號", "transaction_id": "QA-TX-UNMATCHED-001"},
+        ]),
+    }
+    paths: list[Path] = []
+    for filename, df in qa_files.items():
+        path = qa_dir / filename
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+        paths.append(path)
+    expected = qa_dir / "expected_results.md"
+    expected.write_text(
+        """# QA Expected Results
+
+- `qa_bank_exact_match.csv`: `KG-209901-9001` should become 已付款 and generate a receipt after full confirmation.
+- `qa_bank_partial_payment.csv`: first import should record 部分付款; second row should complete `KG-209901-9002`.
+- `qa_bank_error_cases.csv`: amount mismatch should become 待對帳確認 / 金額需確認, duplicate transaction should be detected, and no-match row should remain Unmatched.
+- Receipts must not be generated for unpaid, partial, pending-review, or overpaid bills.
+- QR Code raw content must remain a full token URL and must not expose Bill ID or student data.
+""",
+        encoding="utf-8",
+    )
+    paths.append(expected)
+    log_audit("QA test data generated", "maintenance", "QA", "QA test data and CSV files were generated.")
+    return paths
+
+
+def build_qa_pack_zip() -> bytes:
+    qa_dir = DATA_DIR / "qa"
+    paths = sorted(qa_dir.glob("*")) if qa_dir.exists() else []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in paths:
+            if path.is_file():
+                zf.write(path, arcname=path.name)
+    buffer.seek(0)
     return buffer.getvalue()
 
 
@@ -1727,6 +1883,27 @@ def settings_page() -> None:
             st.success("QR Token 修復 / 補齊已完成。")
         except Exception as exc:
             st.error(str(exc))
+    st.subheader("QA 測試資料")
+    st.caption("供 V1.5 Internal Beta 測試使用。產生與清除動作只處理 QA-* 測試資料，不會刪除一般資料。")
+    q1, q2 = st.columns(2)
+    with q1:
+        if st.button("產生 QA 測試資料"):
+            try:
+                paths = create_qa_test_data()
+                st.session_state["qa_pack_ready"] = True
+                st.success(f"QA 測試資料已產生，共 {len(paths)} 個檔案。")
+            except Exception as exc:
+                st.error(str(exc))
+    with q2:
+        if st.button("清除 QA 測試資料"):
+            try:
+                clear_qa_test_data()
+                st.session_state["qa_pack_ready"] = False
+                st.success("QA 測試資料已清除。")
+            except Exception as exc:
+                st.error(str(exc))
+    if st.session_state.get("qa_pack_ready"):
+        st.download_button("下載 QA 測試資料包", data=build_qa_pack_zip(), file_name="qa_test_data_pack.zip", mime="application/zip")
     st.download_button("匯出帳單、收據與付款紀錄備份", data=build_receipt_backup_zip(), file_name=f"kindergarten_backup_{date.today().isoformat()}.zip", mime="application/zip")
     render_responsibility_panel()
 

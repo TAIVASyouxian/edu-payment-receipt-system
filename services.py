@@ -428,13 +428,17 @@ def match_transaction(tx: dict) -> MatchResult:
 
 
 def import_and_reconcile(df: pd.DataFrame) -> pd.DataFrame:
-    required = ["transaction_date", "amount", "payer_name", "payment_note", "transaction_id"]
+    required = ["transaction_date", "amount", "payment_note", "transaction_id"]
     missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"CSV 缺少必要欄位：{', '.join(missing)}")
+    if "payer_name" not in df.columns:
+        df = df.copy()
+        df["payer_name"] = ""
+    ordered_columns = ["transaction_date", "amount", "payer_name", "payment_note", "transaction_id"]
 
     results = []
-    for tx in df[required].to_dict("records"):
+    for tx in df[ordered_columns].to_dict("records"):
         result = match_transaction(tx)
         if result.status == "Matched" and result.bill_id:
             mark_bill_paid(result.bill_id, str(tx["transaction_date"]).strip(), result.message)

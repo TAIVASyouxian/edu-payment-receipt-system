@@ -576,17 +576,21 @@ def match_transaction(tx: dict) -> MatchResult:
 
 
 def import_and_reconcile(df: pd.DataFrame) -> pd.DataFrame:
-    required = ["transaction_date", "amount", "payer_name", "payment_note", "transaction_id"]
+    required = ["transaction_date", "amount", "payment_note", "transaction_id"]
     missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"CSV 缺少必要欄位：{', '.join(missing)}")
+    if "payer_name" not in df.columns:
+        df = df.copy()
+        df["payer_name"] = ""
+    ordered_columns = ["transaction_date", "amount", "payer_name", "payment_note", "transaction_id"]
     log_audit("Bank CSV imported", "csv", None, f"Imported bank CSV with {len(df)} rows.")
 
     results = []
     batch_id = imported_batch_id()
     seen_transactions: set[str] = set()
     seen_bills: set[str] = set()
-    for tx in df[required].to_dict("records"):
+    for tx in df[ordered_columns].to_dict("records"):
         tx_id = str(tx["transaction_id"]).strip()
         duplicate_warning = ""
         with connect() as conn:

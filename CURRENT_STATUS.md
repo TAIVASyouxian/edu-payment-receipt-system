@@ -72,6 +72,12 @@ Project: Kindergarten QR Payment & Digital Receipt System
   - Added 幼兒足球班, 流行音樂鍵盤班, 外師 Josh 繪本班, 幼兒桌遊班.
   - Added 幼兒晚餐費, 幼兒延托費, 幼兒臨時延托費, 幼兒加時照顧費.
   - These items appear under 幼兒園 filtering and use categories 幼兒園才藝 / 幼兒園延伸照顧.
+- V1.5 Internal Beta cleanup:
+  - QR raw content is validated as a full secure token URL only: `<payment_page_base_url>/?page=parent&token=<qr_token>`.
+  - QR raw content must not include Bill ID, student name, class, amount, course name, or transfer memo.
+  - Parent-facing transfer memo now displays only a friendly suggested memo such as `KG-202605-0006 幼兒園月費`; internal machine-readable text is not shown to parents.
+  - CSV import now shows a 欄位對應說明, always previews the uploaded CSV, and blocks processing with a clear message if required columns are missing.
+  - Added 管理設定 -> QA 測試資料 tools for generating, downloading, and clearing V1.5 QA data. Clearing only removes `QA-*` test records and bills tied to QA students.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園
@@ -113,6 +119,7 @@ Project: Kindergarten QR Payment & Digital Receipt System
 - `app.py`
   - Added course templates, billing cycle labels, department filters, improved program UI, improved enrollment flow, department-filtered bill creation, token-based parent page, masked display, watermark, parent downloads, and new settings fields.
   - Added new kindergarten talent and extended-care service items to the predefined course dropdowns.
+  - Added parent-friendly transfer memo display, CSV validation/preview support, and QA test data generation/download/cleanup tools.
 - `database.py`
   - Added safe migration columns for QR token lifecycle.
   - Updated default program/course seed data for common kindergarten, after-school, talent, and other service items.
@@ -123,6 +130,7 @@ Project: Kindergarten QR Payment & Digital Receipt System
 - `safety_services.py`
   - Added QR token creation, regeneration, expiration, and used-token handling.
   - Updated QR generation to store only token URL content.
+  - Tightened QR payload validation and CSV required-column handling.
 - `CURRENT_STATUS.md`
   - Updated to reflect the current working version and latest changes.
 
@@ -376,6 +384,29 @@ After full payment confirmation, the parent-facing page offers:
 15. Confirm wording remains gentle and does not show sensitive admin notes.
 16. Review audit log for QR access, token generation/regeneration, token used, payment confirmation, and parent downloads.
 
+## 10A. V1.5 Internal Beta Cleanup Test Checklist
+
+1. Go to 管理設定 and confirm 付款頁 Base URL is filled.
+2. Open 帳單 / QR section, select an unpaid bill, and confirm QR 內容預覽 is a full URL in this format:
+   - `<payment_page_base_url>/?page=parent&token=<qr_token>`
+3. Confirm QR 內容預覽 does not include:
+   - Bill ID
+   - student name
+   - class name
+   - amount
+   - course name
+   - payment memo
+4. Open the parent token page on mobile width.
+5. Confirm no raw HTML is visible, cards are stacked, text is readable, and the yellow notice uses readable purple text.
+6. Confirm the parent-facing transfer memo label is `轉帳備註建議填寫` and the displayed content is friendly, such as `KG-202605-0006 幼兒園月費`.
+7. Go to CSV 匯入與自動對帳.
+8. Upload a CSV missing one required column and confirm the app shows `CSV 缺少必要欄位：...` without crashing.
+9. Upload a valid CSV and confirm the preview appears before processing.
+10. Go to 管理設定 -> QA 測試資料.
+11. Click `產生 QA 測試資料`, then download the QA pack.
+12. Import the QA bank CSV files one by one and compare behavior with `expected_results.md`.
+13. Click `清除 QA 測試資料` and confirm only QA data is removed.
+
 ## 11. Known Limitations
 
 - This is still a prototype, not a production accounting system.
@@ -386,6 +417,8 @@ After full payment confirmation, the parent-facing page offers:
 - Existing old sample programs may still remain in the database because seed data uses insert-if-missing and does not delete old records.
 - The department filter is based on course name/category inference, not a dedicated department column in `programs`.
 - Real bank CSV formats still need a mapping/import setup for production use.
+- The V1.5 CSV validation checks required columns and supports missing `payer_name` as blank, but it does not yet provide a full real-bank column mapping UI.
+- QA test data is intended for internal beta testing only and uses future-dated fake records.
 - No real payment gateway, bank API, webhook, credit card processing, or parent login is implemented.
 - Streamlit may show `use_container_width` deprecation warnings; they do not currently block the app.
 
