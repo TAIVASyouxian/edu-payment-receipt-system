@@ -329,14 +329,14 @@ COURSE_TEMPLATES = {
         {"program_id": "PRG-KG-OTHER", "program_name": "幼兒園其他費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
     ],
     "安親班": [
-        {"program_id": "PRG-AFTERSCHOOL", "program_name": "一般安親班", "program_category": "安親班", "default_fee_amount": 8000, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-ENGLISH", "program_name": "安親兒童美語", "program_category": "安親班", "default_fee_amount": 3000, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-ART", "program_name": "安親美術班", "program_category": "安親班", "default_fee_amount": 2600, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-CALLIGRAPHY", "program_name": "安親書法班", "program_category": "安親班", "default_fee_amount": 2500, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-SNACK", "program_name": "安親點心費", "program_category": "安親班", "default_fee_amount": 800, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-TRANSPORT", "program_name": "安親交通費", "program_category": "交通", "default_fee_amount": 2000, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-VACATION", "program_name": "寒暑假安親", "program_category": "安親班", "default_fee_amount": 9000, "billing_cycle": "monthly"},
-        {"program_id": "PRG-AFTERSCHOOL-OTHER", "program_name": "安親其他費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
+        {"program_id": "PRG-AFTERSCHOOL", "program_name": "一般安親班", "program_category": "一般平日安親班", "default_fee_amount": 8000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-SNACK", "program_name": "安親點心費", "program_category": "一般平日安親班", "default_fee_amount": 800, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-TRANSPORT", "program_name": "安親交通費", "program_category": "一般平日安親班", "default_fee_amount": 2000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-VACATION", "program_name": "寒暑假安親", "program_category": "一般平日安親班", "default_fee_amount": 9000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-OTHER", "program_name": "安親其他費用", "program_category": "一般平日安親班", "default_fee_amount": 0, "billing_cycle": "one-time"},
+        {"program_id": "PRG-AFTERSCHOOL-ENGLISH", "program_name": "安親兒童美語", "program_category": "安親延伸課程", "default_fee_amount": 3000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-ART", "program_name": "安親美術班", "program_category": "安親延伸課程", "default_fee_amount": 2600, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-CALLIGRAPHY", "program_name": "安親書法班", "program_category": "安親延伸課程", "default_fee_amount": 2500, "billing_cycle": "monthly"},
     ],
     "才藝班": [
         {"program_id": "PRG-ENGLISH", "program_name": "兒童美語", "program_category": "兒童美語", "default_fee_amount": 3000, "billing_cycle": "monthly"},
@@ -392,7 +392,7 @@ def infer_program_department(row: object) -> str:
     category = str(getattr(row, "program_category", "") or row.get("program_category", "") if isinstance(row, dict) else "")
     if name.startswith("幼兒園") or category == "幼兒園":
         return "幼兒園"
-    if name.startswith("安親") or "安親" in name or category == "安親班":
+    if name.startswith("安親") or "安親" in name or category in ["安親班", "一般平日安親班", "安親延伸課程"]:
         return "安親班"
     if category in ["兒童美語", "美術", "書法", "假日才藝", "才藝班"] or any(keyword in name for keyword in ["美語", "美術", "書法", "音樂", "才藝"]):
         return "才藝班"
@@ -710,7 +710,7 @@ def programs_page() -> None:
                 program_id = c1.text_input("課程 ID", placeholder="PRG-CUSTOM")
                 program_name = c2.text_input("課程 / 服務名稱")
                 c3, c4, c5 = st.columns(3)
-                program_category = c3.selectbox("類別", ["幼兒園", "安親班", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
+                program_category = c3.selectbox("類別", ["幼兒園", "一般平日安親班", "安親延伸課程", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
                 default_fee_amount = c4.number_input("預設金額", min_value=0, value=0, step=100)
                 billing_cycle = c5.selectbox("收費週期", BILLING_CYCLE_OPTIONS, format_func=billing_cycle_label)
             else:
@@ -789,7 +789,7 @@ def programs_page() -> None:
             column_config={
                 "program_id": "課程 ID",
                 "program_name": "課程 / 服務名稱",
-                "program_category": st.column_config.SelectboxColumn("類別", options=["幼兒園", "安親班", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"]),
+                "program_category": st.column_config.SelectboxColumn("類別", options=["幼兒園", "一般平日安親班", "安親延伸課程", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"]),
                 "default_fee_amount": st.column_config.NumberColumn("預設金額", min_value=0, step=100),
                 "billing_cycle": st.column_config.SelectboxColumn("收費週期", options=BILLING_CYCLE_OPTIONS),
                 "status": st.column_config.SelectboxColumn("狀態", options=["active", "inactive"]),

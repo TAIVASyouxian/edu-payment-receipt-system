@@ -256,14 +256,14 @@ def _seed_default_programs(conn: sqlite3.Connection) -> None:
         ("PRG-KG-TRANSPORT", "幼兒園交通費", "交通", 2000, "monthly", "active", "幼兒園交通服務"),
         ("PRG-KG-ACTIVITY", "幼兒園活動費", "幼兒園", 800, "one-time", "active", "幼兒園活動相關費用"),
         ("PRG-KG-OTHER", "幼兒園其他費用", "其他", 0, "one-time", "active", "幼兒園其他收費項目"),
-        ("PRG-AFTERSCHOOL", "一般安親班", "安親班", 8000, "monthly", "active", "平日課後照顧"),
-        ("PRG-AFTERSCHOOL-ENGLISH", "安親兒童美語", "安親班", 3000, "monthly", "active", "安親學生加選兒童美語"),
-        ("PRG-AFTERSCHOOL-ART", "安親美術班", "安親班", 2600, "monthly", "active", "安親學生加選美術"),
-        ("PRG-AFTERSCHOOL-CALLIGRAPHY", "安親書法班", "安親班", 2500, "monthly", "active", "安親學生加選書法"),
-        ("PRG-AFTERSCHOOL-SNACK", "安親點心費", "安親班", 800, "monthly", "active", "安親點心費"),
-        ("PRG-AFTERSCHOOL-TRANSPORT", "安親交通費", "交通", 2000, "monthly", "active", "安親交通服務"),
-        ("PRG-AFTERSCHOOL-VACATION", "寒暑假安親", "安親班", 9000, "monthly", "active", "寒暑假安親服務"),
-        ("PRG-AFTERSCHOOL-OTHER", "安親其他費用", "其他", 0, "one-time", "active", "安親其他收費項目"),
+        ("PRG-AFTERSCHOOL", "一般安親班", "一般平日安親班", 8000, "monthly", "active", "平日課後照顧"),
+        ("PRG-AFTERSCHOOL-SNACK", "安親點心費", "一般平日安親班", 800, "monthly", "active", "安親點心費"),
+        ("PRG-AFTERSCHOOL-TRANSPORT", "安親交通費", "一般平日安親班", 2000, "monthly", "active", "安親交通服務"),
+        ("PRG-AFTERSCHOOL-VACATION", "寒暑假安親", "一般平日安親班", 9000, "monthly", "active", "寒暑假安親服務"),
+        ("PRG-AFTERSCHOOL-OTHER", "安親其他費用", "一般平日安親班", 0, "one-time", "active", "安親其他收費項目"),
+        ("PRG-AFTERSCHOOL-ENGLISH", "安親兒童美語", "安親延伸課程", 3000, "monthly", "active", "安親學生加選兒童美語"),
+        ("PRG-AFTERSCHOOL-ART", "安親美術班", "安親延伸課程", 2600, "monthly", "active", "安親學生加選美術"),
+        ("PRG-AFTERSCHOOL-CALLIGRAPHY", "安親書法班", "安親延伸課程", 2500, "monthly", "active", "安親學生加選書法"),
         ("PRG-ENGLISH", "兒童美語", "兒童美語", 3000, "monthly", "active", "兒童美語課程"),
         ("PRG-ART", "美術班", "美術", 2600, "monthly", "active", "美術課程"),
         ("PRG-CALLIGRAPHY", "書法班", "書法", 2500, "monthly", "active", "書法課程"),
@@ -291,6 +291,20 @@ def _seed_default_programs(conn: sqlite3.Connection) -> None:
         SET default_fee_amount = 2500
         WHERE program_id = 'PRG-CALLIGRAPHY' AND default_fee_amount = 2400
         """
+    )
+    category_updates = [
+        ("一般平日安親班", "PRG-AFTERSCHOOL"),
+        ("一般平日安親班", "PRG-AFTERSCHOOL-SNACK"),
+        ("一般平日安親班", "PRG-AFTERSCHOOL-TRANSPORT"),
+        ("一般平日安親班", "PRG-AFTERSCHOOL-VACATION"),
+        ("一般平日安親班", "PRG-AFTERSCHOOL-OTHER"),
+        ("安親延伸課程", "PRG-AFTERSCHOOL-ENGLISH"),
+        ("安親延伸課程", "PRG-AFTERSCHOOL-ART"),
+        ("安親延伸課程", "PRG-AFTERSCHOOL-CALLIGRAPHY"),
+    ]
+    conn.executemany(
+        "UPDATE programs SET program_category = ? WHERE program_id = ?",
+        category_updates,
     )
 
 
