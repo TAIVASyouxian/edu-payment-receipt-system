@@ -152,59 +152,56 @@ def init_db() -> None:
             """
         )
 
+        def column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            return any(row[1] == column_name for row in rows)
+
         def table_columns(table: str) -> set[str]:
             return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
         def add_column_if_missing(table: str, column: str, definition: str) -> None:
-            if column not in table_columns(table):
+            if not column_exists(conn, table, column):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-        bill_columns = table_columns("bills")
-        if "receipt_issue_date" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN receipt_issue_date TEXT")
-        if "qr_signature" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_signature TEXT")
-        if "qr_stale" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_stale INTEGER NOT NULL DEFAULT 0")
-        if "program_id" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN program_id TEXT")
-        if "enrollment_id" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN enrollment_id TEXT")
-        if "billing_month" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN billing_month TEXT")
+        add_column_if_missing("bills", "receipt_issue_date", "TEXT")
+        add_column_if_missing("bills", "qr_signature", "TEXT")
+        add_column_if_missing("bills", "qr_stale", "INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing("bills", "program_id", "TEXT")
+        add_column_if_missing("bills", "enrollment_id", "TEXT")
+        add_column_if_missing("bills", "billing_month", "TEXT")
+        if column_exists(conn, "bills", "billing_month") and column_exists(conn, "bills", "month"):
             conn.execute("UPDATE bills SET billing_month = month WHERE billing_month IS NULL")
-        if "payment_status" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN payment_status TEXT")
-            bill_columns = table_columns("bills")
-            if "status" in bill_columns:
-                conn.execute("UPDATE bills SET payment_status = status WHERE payment_status IS NULL")
-        if "total_amount" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN total_amount INTEGER NOT NULL DEFAULT 0")
-        bill_columns = table_columns("bills")
-        if {"total_amount", "amount"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET total_amount = COALESCE(amount, 0) WHERE total_amount IS NULL OR total_amount = 0")
-        if "paid_amount" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN paid_amount INTEGER NOT NULL DEFAULT 0")
-        bill_columns = table_columns("bills")
-        if "remaining_amount" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN remaining_amount INTEGER NOT NULL DEFAULT 0")
-        bill_columns = table_columns("bills")
-        if {"remaining_amount", "total_amount", "paid_amount"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET remaining_amount = MAX(COALESCE(total_amount, 0) - COALESCE(paid_amount, 0), 0) WHERE remaining_amount IS NULL OR remaining_amount = 0")
-        if "grace_until_date" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN grace_until_date TEXT")
-        if "last_payment_date" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN last_payment_date TEXT")
-        if "qr_token" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_token TEXT")
-        if "qr_token_status" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_status TEXT NOT NULL DEFAULT 'active'")
-        if "qr_token_created_at" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_created_at TEXT")
-        if "qr_token_used_at" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_used_at TEXT")
-        if "qr_token_expires_at" not in bill_columns:
-            conn.execute("ALTER TABLE bills ADD COLUMN qr_token_expires_at TEXT")
+
+        add_column_if_missing("bills", "payment_status", "TEXT")
+        if column_exists(conn, "bills", "payment_status") and column_exists(conn, "bills", "status"):
+            conn.execute("UPDATE bills SET payment_status = status WHERE payment_status IS NULL")
+
+        add_column_if_missing("bills", "total_amount", "REAL DEFAULT 0")
+        if column_exists(conn, "bills", "total_amount") and column_exists(conn, "bills", "amount"):
+            conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+
+        add_column_if_missing("bills", "paid_amount", "REAL DEFAULT 0")
+        if column_exists(conn, "bills", "paid_amount"):
+            conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
+
+        add_column_if_missing("bills", "remaining_amount", "REAL DEFAULT 0")
+        if (
+            column_exists(conn, "bills", "remaining_amount")
+            and column_exists(conn, "bills", "total_amount")
+            and column_exists(conn, "bills", "paid_amount")
+        ):
+            conn.execute(
+                "UPDATE bills SET remaining_amount = MAX(COALESCE(total_amount, 0) - COALESCE(paid_amount, 0), 0) "
+                "WHERE remaining_amount IS NULL"
+            )
+
+        add_column_if_missing("bills", "grace_until_date", "TEXT")
+        add_column_if_missing("bills", "last_payment_date", "TEXT")
+        add_column_if_missing("bills", "qr_token", "TEXT")
+        add_column_if_missing("bills", "qr_token_status", "TEXT DEFAULT 'active'")
+        add_column_if_missing("bills", "qr_token_created_at", "TEXT")
+        add_column_if_missing("bills", "qr_token_used_at", "TEXT")
+        add_column_if_missing("bills", "qr_token_expires_at", "TEXT")
         bill_columns = table_columns("bills")
         conn.execute(
             """
@@ -213,12 +210,6 @@ def init_db() -> None:
             WHERE qr_token IS NOT NULL
             """
         )
-        if {"total_amount", "amount"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET total_amount = COALESCE(amount, 0) WHERE total_amount IS NULL OR total_amount = 0")
-        if "paid_amount" in bill_columns:
-            conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
-        if {"remaining_amount", "total_amount", "paid_amount"}.issubset(bill_columns):
-            conn.execute("UPDATE bills SET remaining_amount = MAX(COALESCE(total_amount, 0) - COALESCE(paid_amount, 0), 0) WHERE remaining_amount IS NULL")
         if {"paid_amount", "total_amount", "amount", "remaining_amount", "payment_status", "last_payment_date", "payment_date", "status"}.issubset(bill_columns):
             conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, amount), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
         if {"payment_status", "status"}.issubset(bill_columns):
