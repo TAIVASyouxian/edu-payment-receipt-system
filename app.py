@@ -976,14 +976,18 @@ def bills_page() -> None:
     st.dataframe(display, hide_index=True, use_container_width=True)
 
     st.subheader("帳單 QR Code 與付款資訊")
+    settings = get_settings()
+    payment_base_url = str(settings.get("payment_page_base_url") or "").strip().rstrip("/")
     bill_id = st.selectbox("選擇帳單", bills["bill_id"].tolist(), format_func=lambda x: f"{x} - {bills[bills['bill_id'] == x].iloc[0]['student_name']}")
     bill = bills[bills["bill_id"] == bill_id].iloc[0].to_dict()
     department_unconfirmed = is_student_department_unconfirmed(bill)
     if department_unconfirmed:
         st.warning(department_unconfirmed_message())
+    if not payment_base_url and bill["status"] != PAID:
+        st.warning("請先到管理設定填寫付款頁基礎網址，再產生正式 QR Code。")
     if bill["status"] == PAID:
         st.info("此帳單已完成繳費確認，QR 連結不再用於付款。")
-    elif not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
+    elif payment_base_url and not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
         bill["qr_path"] = generate_qr_for_bill(bill)
 
     c1, c2 = st.columns([1, 2])
@@ -992,6 +996,8 @@ def bills_page() -> None:
             st.info("已付款帳單不顯示付款 QR Code。")
         elif department_unconfirmed:
             st.info("學生部門確認前，系統不提供 QR Code 重新產生或顯示。")
+        elif not payment_base_url:
+            st.info("尚未設定付款頁基礎網址，因此不顯示正式 QR Code。")
         elif bill.get("qr_path") and not pd.isna(bill.get("qr_path")) and Path(str(bill["qr_path"])).exists():
             st.image(bill["qr_path"], caption="QR Code 已綁定一次性安全連結", width=230)
             st.caption(f"Token 狀態：{bill.get('qr_token_status') or 'active'}")
@@ -1011,7 +1017,13 @@ def bills_page() -> None:
         st.markdown(f"**付款狀態：** {bill.get('payment_status') or STATUS_LABELS.get(bill['status'], bill['status'])}")
         st.markdown("**付款備註 / 轉帳附言**")
         st.code(payment_reference(bill), language="text")
-        if st.button("重新產生 QR Code", disabled=department_unconfirmed or bill["status"] == PAID):
+        qr_token = str(bill.get("qr_token") or "").strip()
+        if payment_base_url and qr_token:
+            st.markdown("**管理端 QR 內容預覽**")
+            st.code(parent_payment_url_for_token(qr_token), language="text")
+        elif not payment_base_url:
+            st.caption("設定付款頁基礎網址後，這裡會顯示 QR 實際編碼內容。")
+        if st.button("重新產生 QR Code", disabled=department_unconfirmed or bill["status"] == PAID or not payment_base_url):
             try:
                 regenerate_qr_for_bill(bill)
                 st.success("QR Code 已重新產生，舊連結已失效。")
@@ -1465,7 +1477,7 @@ def settings_page() -> None:
         bank_account_text = st.text_area("銀行 / 支付帳戶顯示文字", settings["bank_account_text"], height=100)
         receipt_footer_text = st.text_area("收據頁尾文字", settings["receipt_footer_text"], height=80)
         responsible_person = st.text_input("經手人 / 負責人顯示文字", settings["responsible_person"])
-        payment_page_base_url = st.text_input("付款頁 Base URL（Streamlit Cloud 網址，可留空使用相對連結）", settings.get("payment_page_base_url", ""))
+        payment_page_base_url = st.text_input("付款頁 Base URL（Streamlit Cloud 網址，正式 QR Code 必填）", settings.get("payment_page_base_url", ""))
         privacy_mode = st.selectbox(
             "隱私模式",
             ["standard", "admin_full"],

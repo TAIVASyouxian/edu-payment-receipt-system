@@ -55,9 +55,9 @@ def payment_reference(bill: dict) -> str:
 def parent_payment_url(token: str) -> str:
     settings = get_settings()
     base_url = str(settings.get("payment_page_base_url") or "").strip().rstrip("/")
-    if base_url:
-        return f"{base_url}/?page=parent&token={token}"
-    return f"?page=parent&token={token}"
+    if not base_url:
+        raise ValueError("請先到管理設定填寫付款頁基礎網址，再產生正式 QR Code。")
+    return f"{base_url}/?page=parent&token={token}"
 
 
 def normalize_text(value: object) -> str:

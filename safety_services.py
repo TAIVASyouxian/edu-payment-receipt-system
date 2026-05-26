@@ -175,9 +175,9 @@ def payment_base_url() -> str:
 
 def parent_payment_url_for_token(token: str) -> str:
     base_url = payment_base_url()
-    if base_url:
-        return f"{base_url}/?page=parent&token={token}"
-    return f"?page=parent&token={token}"
+    if not base_url:
+        raise ValueError("請先到管理設定填寫付款頁基礎網址，再產生正式 QR Code。")
+    return f"{base_url}/?page=parent&token={token}"
 
 
 def ensure_qr_token(bill: dict, regenerate: bool = False) -> str:
