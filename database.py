@@ -195,13 +195,32 @@ def init_db() -> None:
 
 def _seed_default_programs(conn: sqlite3.Connection) -> None:
     programs = [
-        ("PRG-KG", "幼兒園部", "幼兒園", 8500, "monthly", "active", "幼兒園月費或主要服務"),
-        ("PRG-CARE-WEEKDAY", "一般平日安親班", "安親班", 6500, "monthly", "active", "平日課後照顧"),
-        ("PRG-CARE-ENGLISH", "安親兒童美語", "兒童美語", 3200, "monthly", "active", "安親學生加選兒童美語"),
-        ("PRG-ENGLISH-ONLY", "兒童美語單修", "兒童美語", 3600, "monthly", "active", "只上兒童美語但沒有參加安親"),
+        ("PRG-KG-MONTHLY", "幼兒園月費", "幼兒園", 8500, "monthly", "active", "幼兒園月費或主要服務"),
+        ("PRG-KG-REGISTRATION", "幼兒園註冊費", "幼兒園", 12000, "semester", "active", "幼兒園學期註冊費"),
+        ("PRG-KG-MATERIALS", "幼兒園材料費", "材料", 1500, "semester", "active", "幼兒園材料費"),
+        ("PRG-KG-TRANSPORT", "幼兒園交通費", "交通", 2000, "monthly", "active", "幼兒園交通服務"),
+        ("PRG-KG-ACTIVITY", "幼兒園活動費", "幼兒園", 800, "one-time", "active", "幼兒園活動相關費用"),
+        ("PRG-KG-OTHER", "幼兒園其他費用", "其他", 0, "one-time", "active", "幼兒園其他收費項目"),
+        ("PRG-AFTERSCHOOL", "一般安親班", "安親班", 8000, "monthly", "active", "平日課後照顧"),
+        ("PRG-AFTERSCHOOL-ENGLISH", "安親兒童美語", "安親班", 3000, "monthly", "active", "安親學生加選兒童美語"),
+        ("PRG-AFTERSCHOOL-ART", "安親美術班", "安親班", 2600, "monthly", "active", "安親學生加選美術"),
+        ("PRG-AFTERSCHOOL-CALLIGRAPHY", "安親書法班", "安親班", 2500, "monthly", "active", "安親學生加選書法"),
+        ("PRG-AFTERSCHOOL-SNACK", "安親點心費", "安親班", 800, "monthly", "active", "安親點心費"),
+        ("PRG-AFTERSCHOOL-TRANSPORT", "安親交通費", "交通", 2000, "monthly", "active", "安親交通服務"),
+        ("PRG-AFTERSCHOOL-VACATION", "寒暑假安親", "安親班", 9000, "monthly", "active", "寒暑假安親服務"),
+        ("PRG-AFTERSCHOOL-OTHER", "安親其他費用", "其他", 0, "one-time", "active", "安親其他收費項目"),
+        ("PRG-ENGLISH", "兒童美語", "兒童美語", 3000, "monthly", "active", "兒童美語課程"),
+        ("PRG-ART", "美術班", "美術", 2600, "monthly", "active", "美術課程"),
+        ("PRG-CALLIGRAPHY", "書法班", "書法", 2500, "monthly", "active", "書法課程"),
+        ("PRG-MUSIC", "音樂班", "才藝班", 3000, "monthly", "active", "音樂課程"),
+        ("PRG-WEEKEND-ART", "假日美術班", "假日才藝", 2800, "monthly", "active", "假日美術課程"),
         ("PRG-WEEKEND-TALENT", "假日才藝班", "假日才藝", 2800, "monthly", "active", "週末才藝課程"),
-        ("PRG-CARE-ART", "安親美術班", "美術", 2600, "monthly", "active", "安親學生加選美術"),
-        ("PRG-CALLIGRAPHY", "書法班", "書法", 2400, "monthly", "active", "書法課程"),
+        ("PRG-TALENT-OTHER", "其他才藝課程", "才藝班", 0, "monthly", "active", "其他才藝課程"),
+        ("PRG-TRANSPORT", "交通費", "交通", 2000, "monthly", "active", "一般交通費"),
+        ("PRG-MATERIALS", "材料費", "材料", 1000, "semester", "active", "一般材料費"),
+        ("PRG-ACTIVITY", "活動費", "其他", 800, "one-time", "active", "活動費"),
+        ("PRG-ADJUSTMENT", "補收費用", "其他", 0, "one-time", "active", "補收或調整項目"),
+        ("PRG-OTHER", "其他費用", "其他", 0, "one-time", "active", "其他收費項目"),
     ]
     conn.executemany(
         """
@@ -210,6 +229,13 @@ def _seed_default_programs(conn: sqlite3.Connection) -> None:
         ON CONFLICT(program_id) DO NOTHING
         """,
         programs,
+    )
+    conn.execute(
+        """
+        UPDATE programs
+        SET default_fee_amount = 2500
+        WHERE program_id = 'PRG-CALLIGRAPHY' AND default_fee_amount = 2400
+        """
     )
 
 

@@ -165,6 +165,56 @@ PAYMENT_STATUS_LABELS = {
     PENDING: "待對帳確認",
 }
 
+BILLING_CYCLE_LABELS = {
+    "monthly": "月繳",
+    "one-time": "單次",
+    "semester": "學期",
+    "per-class": "依堂數",
+}
+
+BILLING_CYCLE_OPTIONS = list(BILLING_CYCLE_LABELS.keys())
+
+PROGRAM_DEPARTMENTS = ["幼兒園", "安親班", "才藝班", "其他"]
+
+COURSE_TEMPLATES = {
+    "幼兒園": [
+        {"program_id": "PRG-KG-MONTHLY", "program_name": "幼兒園月費", "program_category": "幼兒園", "default_fee_amount": 8500, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-REGISTRATION", "program_name": "幼兒園註冊費", "program_category": "幼兒園", "default_fee_amount": 12000, "billing_cycle": "semester"},
+        {"program_id": "PRG-KG-MATERIALS", "program_name": "幼兒園材料費", "program_category": "材料", "default_fee_amount": 1500, "billing_cycle": "semester"},
+        {"program_id": "PRG-KG-TRANSPORT", "program_name": "幼兒園交通費", "program_category": "交通", "default_fee_amount": 2000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-KG-ACTIVITY", "program_name": "幼兒園活動費", "program_category": "幼兒園", "default_fee_amount": 800, "billing_cycle": "one-time"},
+        {"program_id": "PRG-KG-OTHER", "program_name": "幼兒園其他費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
+    ],
+    "安親班": [
+        {"program_id": "PRG-AFTERSCHOOL", "program_name": "一般安親班", "program_category": "安親班", "default_fee_amount": 8000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-ENGLISH", "program_name": "安親兒童美語", "program_category": "安親班", "default_fee_amount": 3000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-ART", "program_name": "安親美術班", "program_category": "安親班", "default_fee_amount": 2600, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-CALLIGRAPHY", "program_name": "安親書法班", "program_category": "安親班", "default_fee_amount": 2500, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-SNACK", "program_name": "安親點心費", "program_category": "安親班", "default_fee_amount": 800, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-TRANSPORT", "program_name": "安親交通費", "program_category": "交通", "default_fee_amount": 2000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-VACATION", "program_name": "寒暑假安親", "program_category": "安親班", "default_fee_amount": 9000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-AFTERSCHOOL-OTHER", "program_name": "安親其他費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
+    ],
+    "才藝班": [
+        {"program_id": "PRG-ENGLISH", "program_name": "兒童美語", "program_category": "兒童美語", "default_fee_amount": 3000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-ART", "program_name": "美術班", "program_category": "美術", "default_fee_amount": 2600, "billing_cycle": "monthly"},
+        {"program_id": "PRG-CALLIGRAPHY", "program_name": "書法班", "program_category": "書法", "default_fee_amount": 2500, "billing_cycle": "monthly"},
+        {"program_id": "PRG-MUSIC", "program_name": "音樂班", "program_category": "才藝班", "default_fee_amount": 3000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-WEEKEND-ART", "program_name": "假日美術班", "program_category": "假日才藝", "default_fee_amount": 2800, "billing_cycle": "monthly"},
+        {"program_id": "PRG-WEEKEND-TALENT", "program_name": "假日才藝班", "program_category": "假日才藝", "default_fee_amount": 2800, "billing_cycle": "monthly"},
+        {"program_id": "PRG-TALENT-OTHER", "program_name": "其他才藝課程", "program_category": "才藝班", "default_fee_amount": 0, "billing_cycle": "monthly"},
+    ],
+    "其他": [
+        {"program_id": "PRG-TRANSPORT", "program_name": "交通費", "program_category": "交通", "default_fee_amount": 2000, "billing_cycle": "monthly"},
+        {"program_id": "PRG-MATERIALS", "program_name": "材料費", "program_category": "材料", "default_fee_amount": 1000, "billing_cycle": "semester"},
+        {"program_id": "PRG-ACTIVITY", "program_name": "活動費", "program_category": "其他", "default_fee_amount": 800, "billing_cycle": "one-time"},
+        {"program_id": "PRG-ADJUSTMENT", "program_name": "補收費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
+        {"program_id": "PRG-OTHER", "program_name": "其他費用", "program_category": "其他", "default_fee_amount": 0, "billing_cycle": "one-time"},
+    ],
+}
+
+CUSTOM_COURSE_LABEL = "自訂課程 / 自訂收費項目"
+
 
 def money(value: object) -> str:
     return f"NT$ {int(float(value or 0)):,}"
@@ -181,6 +231,37 @@ def table_status_chinese(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             out[col] = out[col].replace(STATUS_LABELS)
     return out
+
+
+def billing_cycle_label(value: object) -> str:
+    return BILLING_CYCLE_LABELS.get(str(value or ""), str(value or ""))
+
+
+def template_by_name(department: str, course_name: str) -> dict:
+    for item in COURSE_TEMPLATES.get(department, []):
+        if item["program_name"] == course_name:
+            return item.copy()
+    return {}
+
+
+def infer_program_department(row: object) -> str:
+    name = str(getattr(row, "program_name", "") or row.get("program_name", "") if isinstance(row, dict) else "")
+    category = str(getattr(row, "program_category", "") or row.get("program_category", "") if isinstance(row, dict) else "")
+    if name.startswith("幼兒園") or category == "幼兒園":
+        return "幼兒園"
+    if name.startswith("安親") or "安親" in name or category == "安親班":
+        return "安親班"
+    if category in ["兒童美語", "美術", "書法", "假日才藝", "才藝班"] or any(keyword in name for keyword in ["美語", "美術", "書法", "音樂", "才藝"]):
+        return "才藝班"
+    return "其他"
+
+
+def filter_programs_by_department(programs: pd.DataFrame, department: str) -> pd.DataFrame:
+    if programs.empty:
+        return programs
+    out = programs.copy()
+    out["_department"] = out.apply(lambda row: infer_program_department(row.to_dict()), axis=1)
+    return out[out["_department"] == department].drop(columns=["_department"])
 
 
 def render_metric(label: str, value: object) -> None:
@@ -470,22 +551,51 @@ def programs_page() -> None:
     st.title("課程與收費項目管理")
     programs = read_df("SELECT * FROM programs ORDER BY program_category, program_name")
 
-    with st.expander("新增 / 更新課程與收費項目", expanded=True):
+    with st.expander("新增課程與收費項目", expanded=True):
+        selected_department = st.selectbox("部門", PROGRAM_DEPARTMENTS, key="program_department")
+        course_names = [item["program_name"] for item in COURSE_TEMPLATES[selected_department]] + [CUSTOM_COURSE_LABEL]
+        selected_course = st.selectbox("課程 / 收費項目", course_names, key="program_course_template")
+        template = template_by_name(selected_department, selected_course)
+        is_custom = selected_course == CUSTOM_COURSE_LABEL
+
+        if not is_custom:
+            st.caption("常用課程會自動帶入課程 ID、類別、預設金額與收費週期。需要調整時可修改金額或到進階設定調整 ID。")
+
         with st.form("program_form"):
-            c1, c2, c3 = st.columns(3)
-            program_id = c1.text_input("Program ID", placeholder="PRG-MUSIC")
-            program_name = c2.text_input("課程 / 服務名稱")
-            program_category = c3.selectbox("類別", ["幼兒園", "安親班", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
-            c4, c5, c6 = st.columns(3)
-            default_fee_amount = c4.number_input("預設金額", min_value=0, value=0, step=100)
-            billing_cycle = c5.selectbox("收費週期", ["monthly", "one-time", "semester", "per-class"])
-            status = c6.selectbox("狀態", ["active", "inactive"], format_func=lambda x: "啟用" if x == "active" else "停用")
+            if is_custom:
+                c1, c2 = st.columns(2)
+                program_id = c1.text_input("課程 ID", placeholder="PRG-CUSTOM")
+                program_name = c2.text_input("課程 / 服務名稱")
+                c3, c4, c5 = st.columns(3)
+                program_category = c3.selectbox("類別", ["幼兒園", "安親班", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
+                default_fee_amount = c4.number_input("預設金額", min_value=0, value=0, step=100)
+                billing_cycle = c5.selectbox("收費週期", BILLING_CYCLE_OPTIONS, format_func=billing_cycle_label)
+            else:
+                program_id = template["program_id"]
+                program_name = template["program_name"]
+                program_category = template["program_category"]
+                c1, c2, c3, c4 = st.columns(4)
+                c1.text_input("課程 ID", value=program_id, disabled=True)
+                c2.text_input("課程 / 服務名稱", value=program_name, disabled=True)
+                c3.text_input("類別", value=program_category, disabled=True)
+                default_fee_amount = c4.number_input("預設金額", min_value=0, value=int(template["default_fee_amount"]), step=100)
+                billing_cycle = st.selectbox(
+                    "收費週期",
+                    BILLING_CYCLE_OPTIONS,
+                    index=BILLING_CYCLE_OPTIONS.index(template["billing_cycle"]),
+                    format_func=billing_cycle_label,
+                )
+                with st.expander("進階設定：手動調整課程 ID", expanded=False):
+                    program_id = st.text_input("課程 ID（進階）", value=program_id)
+
+            status = st.selectbox("狀態", ["active", "inactive"], format_func=lambda x: "啟用" if x == "active" else "停用")
             notes = st.text_area("備註", height=80)
             if st.form_submit_button("儲存課程"):
                 if not program_id or not program_name:
-                    st.error("請填寫 Program ID 與課程 / 服務名稱。")
+                    st.error("請填寫課程 ID 與課程 / 服務名稱。")
                 else:
                     with connect() as conn:
+                        existing = conn.execute("SELECT status FROM programs WHERE program_id = ?", (program_id,)).fetchone()
                         conn.execute(
                             """
                             INSERT INTO programs(program_id, program_name, program_category, default_fee_amount, billing_cycle, status, notes)
@@ -500,7 +610,12 @@ def programs_page() -> None:
                             """,
                             (program_id, program_name, program_category, int(default_fee_amount), billing_cycle, status, notes),
                         )
-                    log_audit("Program saved", "program", program_id, f"Saved program {program_name}.")
+                    if not existing:
+                        log_audit("Program created", "program", program_id, f"Created program {program_name}.")
+                    elif status == "inactive" and existing["status"] != "inactive":
+                        log_audit("Program disabled", "program", program_id, f"Disabled program {program_name}.")
+                    else:
+                        log_audit("Program edited", "program", program_id, f"Edited program {program_name}.")
                     st.success("課程資料已儲存。")
                     st.rerun()
 
@@ -518,8 +633,54 @@ def programs_page() -> None:
             "notes": "備註",
         }
     )
+    display["收費週期"] = display["收費週期"].apply(billing_cycle_label)
     display["狀態"] = display["狀態"].replace({"active": "啟用", "inactive": "停用"})
     st.dataframe(display, hide_index=True, use_container_width=True)
+
+    with st.expander("快速編輯現有課程", expanded=False):
+        editable = st.data_editor(
+            programs[["program_id", "program_name", "program_category", "default_fee_amount", "billing_cycle", "status", "notes"]],
+            hide_index=True,
+            use_container_width=True,
+            disabled=["program_id"],
+            column_config={
+                "program_id": "課程 ID",
+                "program_name": "課程 / 服務名稱",
+                "program_category": st.column_config.SelectboxColumn("類別", options=["幼兒園", "安親班", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"]),
+                "default_fee_amount": st.column_config.NumberColumn("預設金額", min_value=0, step=100),
+                "billing_cycle": st.column_config.SelectboxColumn("收費週期", options=BILLING_CYCLE_OPTIONS),
+                "status": st.column_config.SelectboxColumn("狀態", options=["active", "inactive"]),
+                "notes": "備註",
+            },
+        )
+        if st.button("儲存課程編輯"):
+            original = programs.set_index("program_id").to_dict("index")
+            with connect() as conn:
+                for row in editable.to_dict("records"):
+                    old = original.get(row["program_id"], {})
+                    conn.execute(
+                        """
+                        UPDATE programs
+                        SET program_name = ?, program_category = ?, default_fee_amount = ?,
+                            billing_cycle = ?, status = ?, notes = ?
+                        WHERE program_id = ?
+                        """,
+                        (
+                            row["program_name"],
+                            row["program_category"],
+                            int(row["default_fee_amount"] or 0),
+                            row["billing_cycle"],
+                            row["status"],
+                            row["notes"] if pd.notna(row["notes"]) else "",
+                            row["program_id"],
+                        ),
+                    )
+                    if old and row["status"] == "inactive" and old.get("status") != "inactive":
+                        log_audit("Program disabled", "program", row["program_id"], f"Disabled program {row['program_name']}.")
+                    elif old and any(str(row[key]) != str(old.get(key, "")) for key in ["program_name", "program_category", "default_fee_amount", "billing_cycle", "status", "notes"]):
+                        log_audit("Program edited", "program", row["program_id"], f"Edited program {row['program_name']}.")
+            st.success("課程編輯已儲存。")
+            st.rerun()
 
 
 def enrollments_page() -> None:
@@ -531,44 +692,54 @@ def enrollments_page() -> None:
         if students.empty or programs.empty:
             st.info("請先建立啟用中的學生與課程。")
         else:
-            with st.form("enrollment_form"):
-                student_options = {f"{row.student_name}（{row.student_id} / {row.class_name}）": row.student_id for row in students.itertuples()}
-                program_options = {f"{row.program_name}（{row.program_category} / {money(row.default_fee_amount)}）": row.program_id for row in programs.itertuples()}
-                c1, c2 = st.columns(2)
-                selected_student = c1.selectbox("學生", list(student_options.keys()))
-                selected_program = c2.selectbox("課程 / 服務項目", list(program_options.keys()))
-                c3, c4, c5 = st.columns(3)
-                start_date = c3.date_input("開始日期", value=date.today()).isoformat()
-                end_date_value = c4.date_input("結束日期（選填，若不用可留今天後手動清空）", value=date.today()).isoformat()
-                use_end_date = c4.checkbox("設定結束日期", value=False)
-                enrollment_status = c5.selectbox("報名狀態", ["active", "paused", "ended"], format_func=lambda x: {"active": "進行中", "paused": "暫停", "ended": "已結束"}[x])
-                custom_fee_amount = st.number_input("自訂金額（0 代表使用課程預設金額）", min_value=0, value=0, step=100)
-                notes = st.text_area("備註", height=80)
-                if st.form_submit_button("建立報名"):
-                    enrollment_id = next_enrollment_id()
-                    with connect() as conn:
-                        conn.execute(
-                            """
-                            INSERT INTO enrollments(
-                                enrollment_id, student_id, program_id, start_date, end_date,
-                                enrollment_status, custom_fee_amount, notes
+            selected_department = st.selectbox("部門", PROGRAM_DEPARTMENTS, key="enrollment_department")
+            filtered_programs = filter_programs_by_department(programs, selected_department)
+            if filtered_programs.empty:
+                st.info("此部門目前沒有啟用中的課程，請先到「課程與收費項目管理」新增課程。")
+            else:
+                with st.form("enrollment_form"):
+                    student_options = {f"{row.student_name}（{row.student_id} / {row.class_name}）": row.student_id for row in students.itertuples()}
+                    program_options = {f"{row.program_name}（{row.program_category} / {money(row.default_fee_amount)}）": row.program_id for row in filtered_programs.itertuples()}
+                    program_defaults = {row.program_id: int(row.default_fee_amount or 0) for row in filtered_programs.itertuples()}
+                    c1, c2 = st.columns(2)
+                    selected_student = c1.selectbox("學生", list(student_options.keys()))
+                    selected_program = c2.selectbox("課程 / 服務項目", list(program_options.keys()))
+                    selected_program_id = program_options[selected_program]
+                    st.caption(f"課程預設金額：{money(program_defaults[selected_program_id])}。如需個別調整，可填寫自訂金額。")
+                    c3, c4, c5 = st.columns(3)
+                    start_date = c3.date_input("開始日期", value=date.today()).isoformat()
+                    end_date_value = c4.date_input("結束日期（選填，若不用可留今天後手動清空）", value=date.today()).isoformat()
+                    use_end_date = c4.checkbox("設定結束日期", value=False)
+                    enrollment_status = c5.selectbox("報名狀態", ["active", "paused", "ended"], format_func=lambda x: {"active": "進行中", "paused": "暫停", "ended": "已結束"}[x])
+                    custom_fee_amount = st.number_input("自訂金額（0 代表使用課程預設金額）", min_value=0, value=0, step=100)
+                    notes = st.text_area("備註", height=80)
+                    if st.form_submit_button("建立報名"):
+                        enrollment_id = next_enrollment_id()
+                        with connect() as conn:
+                            conn.execute(
+                                """
+                                INSERT INTO enrollments(
+                                    enrollment_id, student_id, program_id, start_date, end_date,
+                                    enrollment_status, custom_fee_amount, notes
+                                )
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    enrollment_id,
+                                    student_options[selected_student],
+                                    selected_program_id,
+                                    start_date,
+                                    end_date_value if use_end_date else None,
+                                    enrollment_status,
+                                    int(custom_fee_amount) if custom_fee_amount else None,
+                                    notes,
+                                ),
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                enrollment_id,
-                                student_options[selected_student],
-                                program_options[selected_program],
-                                start_date,
-                                end_date_value if use_end_date else None,
-                                enrollment_status,
-                                int(custom_fee_amount) if custom_fee_amount else None,
-                                notes,
-                            ),
-                        )
-                    log_audit("Enrollment created", "enrollment", enrollment_id, f"Created enrollment {enrollment_id}.")
-                    st.success("報名紀錄已建立。")
-                    st.rerun()
+                        log_audit("Enrollment created", "enrollment", enrollment_id, f"Created enrollment {enrollment_id}.")
+                        if custom_fee_amount:
+                            log_audit("Custom fee override used", "enrollment", enrollment_id, f"Custom fee {int(custom_fee_amount)} used for enrollment {enrollment_id}.")
+                        st.success("報名紀錄已建立。")
+                        st.rerun()
 
     enrollments = read_df(
         """
@@ -653,12 +824,19 @@ def bills_page() -> None:
                 c1, c2, c3 = st.columns(3)
                 billing_month = c1.text_input("帳單月份", value=date.today().strftime("%Y-%m"))
                 due_date_program = c2.date_input("繳費期限", value=date.today(), key="program_due_date").isoformat()
-                scope_label = c3.selectbox("建立範圍", ["所有啟用中報名", "單一課程", "課程類別", "班級", "單一學生", "指定報名"])
+                scope_label = c3.selectbox("建立範圍", ["所有啟用中報名", "部門", "單一課程", "課程類別", "班級", "單一學生", "指定報名"])
+                selected_department = st.selectbox("部門篩選", PROGRAM_DEPARTMENTS, key="bill_program_department")
+                filtered_programs = filter_programs_by_department(programs, selected_department)
+                filtered_enrollments = active_enrollments.copy()
+                if not active_enrollments.empty:
+                    filtered_enrollments["_department"] = filtered_enrollments.apply(lambda row: infer_program_department(row.to_dict()), axis=1)
+                    filtered_enrollments = filtered_enrollments[filtered_enrollments["_department"] == selected_department].drop(columns=["_department"])
 
                 selected_value = ""
                 selected_enrollment_ids: list[str] = []
                 scope_map = {
                     "所有啟用中報名": "all_active_enrollments",
+                    "部門": "one_category",
                     "單一課程": "one_program",
                     "課程類別": "one_category",
                     "班級": "one_class",
@@ -666,12 +844,20 @@ def bills_page() -> None:
                     "指定報名": "selected_enrollments",
                 }
                 scope = scope_map[scope_label]
+                if scope_label == "部門":
+                    scope = "selected_enrollments"
+                    selected_enrollment_ids = filtered_enrollments["enrollment_id"].dropna().tolist()
+                    st.caption(f"將為「{selected_department}」的所有啟用中報名建立帳單。")
                 if scope_label == "單一課程":
-                    options = {f"{row.program_name}（{row.program_category}）": row.program_id for row in programs.itertuples()}
-                    selected_label = st.selectbox("課程", list(options.keys()))
-                    selected_value = options[selected_label]
+                    if filtered_programs.empty:
+                        st.info("此部門目前沒有啟用中的課程。")
+                    else:
+                        options = {f"{row.program_name}（{row.program_category}）": row.program_id for row in filtered_programs.itertuples()}
+                        selected_label = st.selectbox("課程", list(options.keys()))
+                        selected_value = options[selected_label]
                 elif scope_label == "課程類別":
-                    selected_value = st.selectbox("課程類別", sorted(programs["program_category"].dropna().unique().tolist()))
+                    categories = sorted(filtered_programs["program_category"].dropna().unique().tolist()) if not filtered_programs.empty else []
+                    selected_value = st.selectbox("課程類別", categories)
                 elif scope_label == "班級":
                     selected_value = st.selectbox("班級", sorted(students["class_name"].dropna().unique().tolist()))
                 elif scope_label == "單一學生":
@@ -681,14 +867,16 @@ def bills_page() -> None:
                 elif scope_label == "指定報名":
                     enrollment_options = {
                         f"{row.enrollment_id} - {row.student_name} / {row.program_name}": row.enrollment_id
-                        for row in active_enrollments.itertuples()
+                        for row in filtered_enrollments.itertuples()
                     }
                     selected_labels = st.multiselect("報名紀錄", list(enrollment_options.keys()))
                     selected_enrollment_ids = [enrollment_options[label] for label in selected_labels]
                 notes = st.text_area("帳單備註", height=80, key="program_bill_notes")
                 if st.form_submit_button("依報名產生帳單與 QR Code"):
-                    if scope_label == "指定報名" and not selected_enrollment_ids:
-                        st.error("請至少選擇一筆報名紀錄。")
+                    if scope in ["one_program", "one_category"] and not selected_value:
+                        st.error("請先選擇課程或類別。")
+                    elif scope in ["selected_enrollments"] and not selected_enrollment_ids:
+                        st.error("請至少選擇一筆符合部門篩選的報名紀錄。")
                     else:
                         count = create_bills_from_enrollments(
                             billing_month,
