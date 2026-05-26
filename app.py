@@ -161,17 +161,27 @@ CSS = """
         box-shadow: 0 6px 18px rgba(44, 52, 49, 0.05);
     }
     .parent-detail-label {
-        color: #4b5563;
+        color: #5B3A8E;
         font-size: 14px;
         font-weight: 700;
         margin-bottom: 8px;
     }
     .parent-detail-value {
-        color: #1f2933;
+        color: #263238;
         font-size: 24px;
         font-weight: 800;
         line-height: 1.25;
         overflow-wrap: anywhere;
+    }
+    .parent-safety-notice {
+        background: #f4e7b8;
+        border: 1px solid #e2cb87;
+        border-radius: 12px;
+        padding: 13px 15px;
+        margin: 12px 0;
+        color: #4B2E83;
+        font-weight: 750;
+        line-height: 1.65;
     }
     .parent-summary {
         background: #fffdf8;
@@ -179,10 +189,10 @@ CSS = """
         border-radius: 12px;
         padding: 14px 16px;
         margin: 10px 0 16px 0;
-        color: #1f2933;
+        color: #263238;
         line-height: 1.7;
     }
-    .parent-summary strong { color: #273331; font-weight: 800; }
+    .parent-summary strong { color: #5B3A8E; font-weight: 800; }
     @media (max-width: 640px) {
         .parent-detail-grid {
             grid-template-columns: 1fr;
@@ -1274,7 +1284,10 @@ def parent_payment_page() -> None:
     expired_now = expire_overdue_token(bill)
 
     st.caption(display["watermark"])
-    st.warning("為保護資料安全，請勿轉傳此繳費連結或 QR Code。")
+    st.markdown(
+        '<div class="parent-safety-notice">為保護資料安全，請勿轉傳此繳費連結或 QR Code。</div>',
+        unsafe_allow_html=True,
+    )
     st.info("此頁面僅供家長確認繳費資訊使用。若您已付款，可能尚在對帳中；若近期需要繳費時間安排，請與園方聯繫，我們會協助確認。")
 
     if bill["status"] == PAID:
@@ -1325,7 +1338,10 @@ def parent_payment_page() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.warning("請確認學生、班級、金額與帳單編號正確後再付款。")
+    st.markdown(
+        '<div class="parent-safety-notice">請確認學生、班級、金額與帳單編號正確後再付款。</div>',
+        unsafe_allow_html=True,
+    )
 
     st.subheader("付款說明")
     st.write(settings["bank_account_text"])
