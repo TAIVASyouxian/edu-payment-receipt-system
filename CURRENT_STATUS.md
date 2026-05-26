@@ -64,6 +64,7 @@ Project: Kindergarten QR Payment & Digital Receipt System
   - 下載對帳確認紀錄
 - Added settings for payment page base URL, privacy mode, and default QR token validity period.
 - Improved Streamlit Cloud testing readiness: missing `data/`, QR folder, receipt folder, and SQLite database are created automatically.
+- For test deployment, database reset to kindergarten_v2.db because old SQLite schema was test-only and incompatible.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園

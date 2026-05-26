@@ -10,7 +10,7 @@ ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
 QR_DIR = DATA_DIR / "qr"
 RECEIPT_DIR = DATA_DIR / "receipts"
-DB_PATH = DATA_DIR / "kindergarten.db"
+DB_PATH = DATA_DIR / "kindergarten_v2.db"
 SAMPLE_BANK_CSV = DATA_DIR / "sample_bank_statement.csv"
 
 
