@@ -105,15 +105,29 @@ def classify_existing_students() -> None:
 
 
 def log_audit(event_type: str, entity_type: str | None, entity_id: str | None, message: str) -> None:
-    init_db()
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO audit_logs(event_type, entity_type, entity_id, message)
-            VALUES (?, ?, ?, ?)
-            """,
-            (event_type, entity_type, entity_id, message),
-        )
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    entity_type TEXT,
+                    entity_id TEXT,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_logs(event_type, entity_type, entity_id, message)
+                VALUES (?, ?, ?, ?)
+                """,
+                (event_type, entity_type, entity_id, message),
+            )
+    except Exception:
+        return
 
 
 def _find_bill_id(note: str) -> str | None:
@@ -328,23 +342,31 @@ def regenerate_qr_for_bill(bill: dict) -> str:
 def ensure_all_qr_codes() -> None:
     init_db()
     bills = read_df("SELECT * FROM bills")
+    checked = 0
+    repaired = 0
     for bill in bills.to_dict("records"):
+        checked += 1
         if bill.get("status") == PAID:
             if bill.get("qr_token") and bill.get("qr_token_status") != "used":
-                mark_qr_token_used(bill["bill_id"])
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE bills SET qr_token_status = 'used', qr_token_used_at = ? WHERE bill_id = ?",
+                        (utc_now_text(), bill["bill_id"]),
+                    )
+                repaired += 1
             continue
         qr_path = bill.get("qr_path")
         missing = pd.isna(qr_path) or not qr_path or not Path(str(qr_path)).exists()
         stale = is_bill_stale(bill)
         if is_student_department_unconfirmed(bill):
-            if missing or stale:
-                log_department_block("QR auto-regeneration", bill)
             continue
         if stale:
             with connect() as conn:
                 conn.execute("UPDATE bills SET qr_stale = 1 WHERE bill_id = ?", (bill["bill_id"],))
         if missing or stale:
             generate_qr_for_bill(bill)
+            repaired += 1
+    log_audit("QR token repair completed", "maintenance", None, f"QR token repair completed: {checked} bills checked, {repaired} repaired.")
 
 
 def generate_receipt_pdf(bill_id: str) -> str:
@@ -457,8 +479,11 @@ def create_bills(month: str, fee_item: str, amount: int, due_date: str, scope: s
                 ),
             )
             created.append((bill_id, student["student_name"]))
-    ensure_all_qr_codes()
     for bill_id, student_name in created:
+        try:
+            generate_qr_for_bill({"bill_id": bill_id})
+        except Exception as exc:
+            log_audit("QR generation skipped", "bill", bill_id, f"QR generation skipped for bill {bill_id}: {exc}")
         log_audit("Bill created", "bill", bill_id, f"Created bill {bill_id} for {student_name} amount {amount}.")
     return len(created)
 

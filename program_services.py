@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from database import connect, read_df
-from safety_services import CANCELLED, DEPARTMENT_UNKNOWN, UNPAID, ensure_all_qr_codes, log_audit
+from safety_services import CANCELLED, DEPARTMENT_UNKNOWN, UNPAID, generate_qr_for_bill, log_audit
 from services import next_bill_id
 
 
@@ -133,7 +133,10 @@ def create_bills_from_enrollments(
             )
             created.append((bill_id, enrollment["student_name"], fee_item))
 
-    ensure_all_qr_codes()
     for bill_id, student_name, fee_item in created:
+        try:
+            generate_qr_for_bill({"bill_id": bill_id})
+        except Exception as exc:
+            log_audit("QR generation skipped", "bill", bill_id, f"QR generation skipped for bill {bill_id}: {exc}")
         log_audit("Bill created", "bill", bill_id, f"Created program bill {bill_id} for {student_name} / {fee_item}.")
     return len(created)

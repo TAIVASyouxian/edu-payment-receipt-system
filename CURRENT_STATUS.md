@@ -64,7 +64,8 @@ Project: Kindergarten QR Payment & Digital Receipt System
   - 下載對帳確認紀錄
 - Added settings for payment page base URL, privacy mode, and default QR token validity period.
 - Improved Streamlit Cloud testing readiness: missing `data/`, QR folder, receipt folder, and SQLite database are created automatically.
-- For test deployment, database reset to kindergarten_v2.db because old SQLite schema was test-only and incompatible.
+- For test deployment, database reset to kindergarten_v3.db because old SQLite schema was test-only and incompatible.
+- To reduce SQLite locking on Streamlit Cloud, automatic QR token repair no longer runs on every rerun. Use 管理設定 -> 系統維護 -> 修復 / 補齊 QR Token when needed.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園
@@ -372,6 +373,7 @@ After full payment confirmation, the parent-facing page offers:
 - This is still a prototype, not a production accounting system.
 - Streamlit Community Cloud can run the demo, but SQLite local storage is not ideal for formal production data persistence.
 - SQLite on Streamlit Cloud is for testing only. For real operational use, migrate to an external database.
+- SQLite can still be sensitive to concurrent writes on Streamlit Cloud. The app now avoids automatic QR repair on rerun and uses WAL/busy timeout, but production use should move to an external database.
 - Web App 無法保證完全禁止截圖，但系統透過一次性 QR token、付款後失效、遮蔽姓名與浮水印降低截圖外流風險。
 - Existing old sample programs may still remain in the database because seed data uses insert-if-missing and does not delete old records.
 - The department filter is based on course name/category inference, not a dedicated department column in `programs`.

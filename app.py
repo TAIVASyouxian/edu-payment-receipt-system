@@ -1494,6 +1494,14 @@ def settings_page() -> None:
                 log_audit("Admin switches between masked/full-name view", "settings", "privacy_mode", f"Privacy mode changed from {old_privacy_mode} to {privacy_mode}.")
             st.success("設定已儲存。")
             st.rerun()
+    st.subheader("系統維護")
+    st.caption("這個動作會檢查帳單 QR token 與缺漏 QR 圖檔。為避免 SQLite 在 Streamlit rerun 時被重複寫入，系統不會在每次啟動時自動執行。")
+    if st.button("修復 / 補齊 QR Token"):
+        try:
+            ensure_all_qr_codes()
+            st.success("QR Token 修復 / 補齊已完成。")
+        except Exception as exc:
+            st.error(str(exc))
     st.download_button("匯出帳單、收據與付款紀錄備份", data=build_receipt_backup_zip(), file_name=f"kindergarten_backup_{date.today().isoformat()}.zip", mime="application/zip")
     render_responsibility_panel()
 
@@ -1502,7 +1510,6 @@ def main() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     seed_sample_data()
     classify_existing_students()
-    ensure_all_qr_codes()
 
     page_options = {
         "儀表板": dashboard_page,

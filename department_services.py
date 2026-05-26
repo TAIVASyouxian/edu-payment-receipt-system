@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from database import connect, read_df
-from safety_services import CANCELLED, DEPARTMENT_UNKNOWN, UNPAID, ensure_all_qr_codes, log_audit
+from safety_services import CANCELLED, DEPARTMENT_UNKNOWN, UNPAID, generate_qr_for_bill, log_audit
 from services import next_bill_id
 
 
@@ -68,7 +68,10 @@ def create_bills(month: str, fee_item: str, amount: int, due_date: str, scope: s
                 ),
             )
             created.append((bill_id, student["student_name"]))
-    ensure_all_qr_codes()
     for bill_id, student_name in created:
+        try:
+            generate_qr_for_bill({"bill_id": bill_id})
+        except Exception as exc:
+            log_audit("QR generation skipped", "bill", bill_id, f"QR generation skipped for bill {bill_id}: {exc}")
         log_audit("Bill created", "bill", bill_id, f"Created bill {bill_id} for {student_name} amount {amount}.")
     return len(created)
