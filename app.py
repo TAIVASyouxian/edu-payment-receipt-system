@@ -1,0 +1,1236 @@
+from __future__ import annotations
+
+from datetime import date
+import io
+from pathlib import Path
+import zipfile
+
+import pandas as pd
+import streamlit as st
+
+from database import RECEIPT_DIR, connect, get_settings, read_df, save_settings, seed_sample_data
+from services import PAID, PENDING, UNPAID, payment_reference, sample_bank_statement_path
+from safety_services import (
+    AFTER_SCHOOL,
+    CANCELLED,
+    DEPARTMENT_UNKNOWN,
+    KINDERGARTEN,
+    classify_department,
+    classify_existing_students,
+    ensure_all_qr_codes,
+    generate_qr_for_bill,
+    generate_receipt_pdf,
+    import_and_reconcile,
+    department_unconfirmed_message,
+    is_bill_stale,
+    is_student_department_unconfirmed,
+    log_audit,
+    mark_bill_paid,
+)
+from department_services import create_bills
+from program_services import active_enrollments_query, create_bills_from_enrollments, next_enrollment_id
+from payment_services import (
+    ARRANGEMENT_STATUSES,
+    PAYMENT_PAID,
+    PAYMENT_UNPAID,
+    payment_history,
+    upsert_payment_arrangement,
+)
+
+
+st.set_page_config(
+    page_title="Kindergarten QR Payment & Digital Receipt System",
+    page_icon="🏫",
+    layout="wide",
+)
+
+
+CSS = """
+<style>
+    :root {
+        --nordic-bg: #f7f5f0;
+        --nordic-surface: #fffdf8;
+        --nordic-line: #ddd8cf;
+        --nordic-text: #25302f;
+        --nordic-muted: #66736f;
+        --nordic-sage: #7f9a8c;
+        --nordic-sky: #dbe8ea;
+        --nordic-cream: #f2eadf;
+        --nordic-amber: #ead8b4;
+        --nordic-critical: #c47f74;
+    }
+    .stApp { background: var(--nordic-bg); color: var(--nordic-text); }
+    .main .block-container { padding-top: 1.6rem; max-width: 1180px; }
+    h1, h2, h3 { letter-spacing: 0; color: var(--nordic-text); font-weight: 650; }
+    .metric-card {
+        background: var(--nordic-surface);
+        border: 1px solid var(--nordic-line);
+        border-radius: 12px;
+        padding: 16px 18px;
+        box-shadow: 0 8px 22px rgba(44, 52, 49, 0.04);
+    }
+    .metric-label { color: var(--nordic-muted); font-size: 14px; margin-bottom: 8px; }
+    .metric-value { color: var(--nordic-text); font-size: 26px; font-weight: 700; }
+    .info-panel {
+        background: #eef4f1;
+        border-left: 4px solid var(--nordic-sage);
+        border-radius: 12px;
+        padding: 14px 16px;
+        color: #34403d;
+        line-height: 1.65;
+    }
+    .calm-section {
+        background: var(--nordic-surface);
+        border: 1px solid var(--nordic-line);
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin: 12px 0;
+    }
+    .calm-section h4 { margin: 0 0 8px 0; color: var(--nordic-text); }
+    .calm-note { color: var(--nordic-muted); line-height: 1.7; }
+    .badge {
+        display: inline-block;
+        padding: 5px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 650;
+    }
+    .paid { background: #dfeee6; color: #3e6f58; }
+    .unpaid { background: #ece7df; color: #655f56; }
+    .pending { background: #f1e2c6; color: #816331; }
+    .danger { background: #f1d9d5; color: #8d4f47; }
+    .receipt-preview {
+        background: var(--nordic-surface);
+        border: 1px solid var(--nordic-line);
+        border-radius: 12px;
+        padding: 28px;
+        color: var(--nordic-text);
+        max-width: 860px;
+        margin: 0 auto;
+    }
+    .receipt-header {
+        border-bottom: 2px solid #334155;
+        padding-bottom: 14px;
+        margin-bottom: 18px;
+        text-align: center;
+    }
+    .receipt-title { font-size: 24px; font-weight: 800; margin-bottom: 6px; }
+    .receipt-subtitle { font-size: 16px; color: #475569; }
+    .receipt-grid {
+        display: grid;
+        grid-template-columns: 150px 1fr 150px 1fr;
+        border-top: 1px solid #cbd5e1;
+        border-left: 1px solid #cbd5e1;
+        margin-top: 14px;
+    }
+    .receipt-label, .receipt-value {
+        border-right: 1px solid #cbd5e1;
+        border-bottom: 1px solid #cbd5e1;
+        padding: 10px 12px;
+        min-height: 42px;
+    }
+    .receipt-label { background: #f8fafc; color: #475569; font-weight: 700; }
+    .receipt-value { background: #ffffff; }
+    .seal-box {
+        width: 110px;
+        height: 110px;
+        border: 1px solid #b91c1c;
+        color: #b91c1c;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: auto;
+        margin-top: 22px;
+        font-weight: 700;
+    }
+</style>
+"""
+
+
+STATUS_LABELS = {
+    PAID: "已付款",
+    UNPAID: "尚未完成繳費",
+    PENDING: "待對帳確認",
+    CANCELLED: "取消帳單",
+    "Matched": "已配對",
+    "Unmatched": "需協助確認",
+    "Duplicate": "疑似重複付款",
+}
+
+PAYMENT_STATUS_LABELS = {
+    None: PAYMENT_UNPAID,
+    "": PAYMENT_UNPAID,
+    PAID: PAYMENT_PAID,
+    UNPAID: PAYMENT_UNPAID,
+    PENDING: "待對帳確認",
+}
+
+
+def money(value: object) -> str:
+    return f"NT$ {int(float(value or 0)):,}"
+
+
+def status_badge(status: str) -> str:
+    cls = "paid" if status in [PAID, "Matched"] else "pending" if status in [PENDING, "Duplicate", "Unmatched"] else "danger" if status in [CANCELLED] else "unpaid"
+    return f'<span class="badge {cls}">{STATUS_LABELS.get(status, status)}</span>'
+
+
+def table_status_chinese(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["status", "match_status"]:
+        if col in out.columns:
+            out[col] = out[col].replace(STATUS_LABELS)
+    return out
+
+
+def render_metric(label: str, value: object) -> None:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_responsibility_panel() -> None:
+    st.markdown(
+        """
+        <div class="info-panel">
+        本系統僅用於繳費紀錄追蹤與數位收據產生，不是電子發票系統。所有款項皆直接進入園方官方帳戶，
+        系統開發者不收取、代收、保管或處理任何款項。會計、稅務、退款與收據內容仍需由園方及會計專業人員確認。
+        V1 不串接真實銀行或支付 API。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_calm_section(title: str, body: str) -> None:
+    st.markdown(
+        f"""
+        <div class="calm-section">
+            <h4>{title}</h4>
+            <div class="calm-note">{body}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def dashboard_page() -> None:
+    st.title("儀表板")
+    render_responsibility_panel()
+
+    students = read_df("SELECT * FROM students")
+    bills = read_df(
+        """
+        SELECT bills.*, COALESCE(students.department, '待確認') AS department,
+               programs.program_name, programs.program_category
+        FROM bills
+        LEFT JOIN students ON bills.student_id = students.student_id
+        LEFT JOIN programs ON bills.program_id = programs.program_id
+        """
+    )
+    tx = read_df("SELECT * FROM transactions ORDER BY imported_at DESC LIMIT 8")
+
+    today = date.today().isoformat()
+    pending_payment_count = len(bills[bills["payment_status"].isin(["待對帳確認", "金額需確認", "溢付款需處理"])]) if not bills.empty and "payment_status" in bills.columns else 0
+    partial_count = len(bills[bills["payment_status"] == "部分付款"]) if not bills.empty and "payment_status" in bills.columns else 0
+    grace_count = len(bills[bills["payment_status"] == "寬限期中"]) if not bills.empty and "payment_status" in bills.columns else 0
+    promised_count = len(bills[bills["payment_status"] == "已約定補繳日"]) if not bills.empty and "payment_status" in bills.columns else 0
+    receipt_ready_count = len(bills[(bills["status"] == PAID) & (bills["receipt_number"].isna())]) if not bills.empty else 0
+    communication_count = len(bills[bills["payment_status"].isin(["家長已聯繫園方", "暫緩提醒"])]) if not bills.empty and "payment_status" in bills.columns else 0
+
+    st.subheader("今日待處理事項")
+    t1, t2, t3, t4 = st.columns(4)
+    with t1:
+        render_metric("待確認繳費", pending_payment_count)
+    with t2:
+        render_metric("收據待產生", receipt_ready_count)
+    with t3:
+        render_metric("寬限期中", grace_count)
+    with t4:
+        render_metric("已約定補繳", promised_count)
+
+    st.subheader("家長溝通備註")
+    render_calm_section(
+        "溝通中的紀錄",
+        f"目前有 {communication_count} 筆紀錄標示為家長已聯繫園方或暫緩提醒。這些狀態用於協助行政追蹤，不作為壓力標籤。",
+    )
+
+    st.subheader("繳費紀錄摘要")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        render_metric("學生數", len(students))
+    with c2:
+        render_metric("本月帳單數", len(bills))
+    with c3:
+        render_metric("已付款帳單", len(bills[bills["status"] == PAID]) if not bills.empty else 0)
+    with c4:
+        pending_students = len(students[students["department"] == DEPARTMENT_UNKNOWN]) if not students.empty and "department" in students.columns else 0
+        render_metric("待確認分類", pending_students)
+
+    p1, p2 = st.columns(2)
+    with p1:
+        render_calm_section("部分付款", f"目前有 {partial_count} 筆帳單已記錄部分付款，待全額確認後再產生正式數位收據。")
+    with p2:
+        render_calm_section("待確認繳費", f"目前有 {pending_payment_count} 筆款項需要園方協助確認，請避免重複處理。")
+
+    st.subheader("部門摘要")
+    rows = []
+    for department in [KINDERGARTEN, AFTER_SCHOOL, DEPARTMENT_UNKNOWN]:
+        dept_students = students[students["department"] == department] if not students.empty and "department" in students.columns else pd.DataFrame()
+        dept_bills = bills[bills["department"] == department] if not bills.empty else pd.DataFrame()
+        rows.append(
+            {
+                "部門": department,
+                "學生數": len(dept_students),
+                "帳單數": len(dept_bills),
+                "已付款": len(dept_bills[dept_bills["status"] == PAID]) if not dept_bills.empty else 0,
+                "待對帳確認": len(dept_bills[dept_bills["status"] == PENDING]) if not dept_bills.empty else 0,
+                "預計金額": money(dept_bills["amount"].sum()) if not dept_bills.empty else money(0),
+                "已確認金額": money(dept_bills[dept_bills["status"] == PAID]["amount"].sum()) if not dept_bills.empty else money(0),
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    st.subheader("課程帳單摘要")
+    program_bills = bills[bills["program_id"].notna()] if not bills.empty and "program_id" in bills.columns else pd.DataFrame()
+    if program_bills.empty:
+        st.info("尚無課程報名產生的帳單。")
+    else:
+        summary_rows = []
+        grouped = program_bills.groupby(["program_category", "program_name", "month"], dropna=False)
+        for (category, program_name, month), group in grouped:
+            paid = group[group["status"] == PAID]
+            unpaid = group[group["status"] == UNPAID]
+            summary_rows.append(
+                {
+                    "課程類別": category or "",
+                    "課程": program_name or "",
+                    "月份": month,
+                    "帳單數": len(group),
+                    "已付款": len(paid),
+                    "尚未完成繳費": len(unpaid),
+                    "預計金額": money(group["amount"].sum()),
+                    "已確認金額": money(paid["amount"].sum()),
+                }
+            )
+        st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+
+    st.subheader("最近對帳紀錄")
+    if tx.empty:
+        st.info("尚無匯入交易紀錄。")
+    else:
+        display = table_status_chinese(tx[["transaction_date", "amount", "payer_name", "payment_note", "match_status", "confidence", "matched_bill_id", "warning"]])
+        display = display.rename(
+            columns={
+                "transaction_date": "交易日期",
+                "amount": "金額",
+                "payer_name": "付款人",
+                "payment_note": "付款備註",
+                "match_status": "對帳狀態",
+                "confidence": "信心度",
+                "matched_bill_id": "配對帳單",
+                "warning": "系統提示",
+            }
+        )
+        st.dataframe(display, hide_index=True, use_container_width=True)
+
+
+def students_page() -> None:
+    st.title("學生管理")
+    st.info("目前 V1 保留部門分類欄位供帳單建立使用。若分類信心度低，系統會標記為待確認，避免未經確認就產生帳單。")
+
+    with st.expander("新增學生", expanded=True):
+        with st.form("add_student"):
+            c1, c2, c3 = st.columns(3)
+            student_id = c1.text_input("Student ID", placeholder="S006")
+            student_name = c2.text_input("學生姓名")
+            class_name = c3.text_input("班級")
+            c4, c5, c6 = st.columns(3)
+            parent_name = c4.text_input("家長姓名")
+            contact = c5.text_input("家長電話或 Email（選填）")
+            inferred = classify_department(class_name=class_name)
+            department_options = list(dict.fromkeys([inferred["department"], KINDERGARTEN, AFTER_SCHOOL, DEPARTMENT_UNKNOWN]))
+            department = c6.selectbox("部門", department_options)
+            status = st.selectbox("狀態", ["active", "inactive"], format_func=lambda x: "啟用" if x == "active" else "停用")
+            st.caption(f"系統建議：{inferred['department']} / 信心度：{inferred['confidence']} / 原因：{inferred['reason']}")
+            if st.form_submit_button("新增"):
+                if not student_id or not student_name or not class_name or not parent_name:
+                    st.error("請填寫 Student ID、學生姓名、班級與家長姓名。")
+                else:
+                    with connect() as conn:
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO students(student_id, student_name, class_name, department, parent_name, contact, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (student_id, student_name, class_name, department, parent_name, contact, status),
+                        )
+                    st.success("學生資料已儲存。")
+                    st.rerun()
+
+    with st.expander("CSV 匯入學生與分類預覽"):
+        st.caption("必要欄位：student_id, student_name, class_name, parent_name。選填欄位：contact, status, department, fee_item。")
+        upload = st.file_uploader("上傳學生 CSV", type=["csv"], key="student_csv")
+        if upload:
+            df = pd.read_csv(upload)
+            required = ["student_id", "student_name", "class_name", "parent_name"]
+            missing = [col for col in required if col not in df.columns]
+            if missing:
+                st.error(f"CSV 缺少必要欄位：{', '.join(missing)}")
+            else:
+                preview = df.copy()
+                for optional in ["contact", "status", "department", "fee_item"]:
+                    if optional not in preview.columns:
+                        preview[optional] = "" if optional != "status" else "active"
+                classifications = preview.apply(
+                    lambda row: classify_department(row.get("class_name"), row.get("fee_item"), row.get("department")),
+                    axis=1,
+                )
+                preview["inferred_department"] = [item["department"] for item in classifications]
+                preview["confidence"] = [item["confidence"] for item in classifications]
+                preview["classification_reason"] = [item["reason"] for item in classifications]
+                preview["manual_department"] = preview["inferred_department"]
+                if (preview["confidence"] == "低").any():
+                    st.warning("部分資料分類信心度低，請在儲存前人工確認。")
+                edited = st.data_editor(
+                    preview[
+                        [
+                            "student_id",
+                            "student_name",
+                            "class_name",
+                            "parent_name",
+                            "contact",
+                            "status",
+                            "inferred_department",
+                            "confidence",
+                            "classification_reason",
+                            "manual_department",
+                        ]
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "manual_department": st.column_config.SelectboxColumn("人工確認部門", options=[KINDERGARTEN, AFTER_SCHOOL, DEPARTMENT_UNKNOWN]),
+                        "status": st.column_config.SelectboxColumn("狀態", options=["active", "inactive"]),
+                    },
+                )
+                if st.button("確認匯入學生"):
+                    with connect() as conn:
+                        conn.executemany(
+                            """
+                            INSERT OR REPLACE INTO students(student_id, student_name, class_name, department, parent_name, contact, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            edited[["student_id", "student_name", "class_name", "manual_department", "parent_name", "contact", "status"]].fillna("").values.tolist(),
+                        )
+                    st.success(f"已匯入 {len(edited)} 筆學生資料。")
+                    st.rerun()
+
+    students = read_df("SELECT * FROM students ORDER BY department, class_name, student_id")
+    department_filter = st.selectbox("部門篩選", ["全部", KINDERGARTEN, AFTER_SCHOOL, DEPARTMENT_UNKNOWN])
+    if department_filter != "全部" and not students.empty:
+        students = students[students["department"] == department_filter]
+
+    st.subheader("學生列表")
+    if students.empty:
+        st.info("尚無學生資料。")
+        return
+    edited = st.data_editor(
+        students[["student_id", "student_name", "class_name", "department", "parent_name", "contact", "status"]],
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        column_config={
+            "department": st.column_config.SelectboxColumn("部門", options=[KINDERGARTEN, AFTER_SCHOOL, DEPARTMENT_UNKNOWN]),
+            "status": st.column_config.SelectboxColumn("狀態", options=["active", "inactive"]),
+        },
+    )
+    if st.button("儲存學生更新"):
+        with connect() as conn:
+            for row in edited.to_dict("records"):
+                conn.execute(
+                    """
+                    UPDATE students
+                    SET student_name = ?, class_name = ?, department = ?, parent_name = ?, contact = ?, status = ?
+                    WHERE student_id = ?
+                    """,
+                    (row["student_name"], row["class_name"], row["department"], row["parent_name"], row["contact"], row["status"], row["student_id"]),
+                )
+        st.success("學生資料已更新。")
+        st.rerun()
+
+
+def programs_page() -> None:
+    st.title("課程與收費項目管理")
+    programs = read_df("SELECT * FROM programs ORDER BY program_category, program_name")
+
+    with st.expander("新增 / 更新課程與收費項目", expanded=True):
+        with st.form("program_form"):
+            c1, c2, c3 = st.columns(3)
+            program_id = c1.text_input("Program ID", placeholder="PRG-MUSIC")
+            program_name = c2.text_input("課程 / 服務名稱")
+            program_category = c3.selectbox("類別", ["幼兒園", "安親班", "兒童美語", "假日才藝", "美術", "書法", "交通", "材料", "其他"])
+            c4, c5, c6 = st.columns(3)
+            default_fee_amount = c4.number_input("預設金額", min_value=0, value=0, step=100)
+            billing_cycle = c5.selectbox("收費週期", ["monthly", "one-time", "semester", "per-class"])
+            status = c6.selectbox("狀態", ["active", "inactive"], format_func=lambda x: "啟用" if x == "active" else "停用")
+            notes = st.text_area("備註", height=80)
+            if st.form_submit_button("儲存課程"):
+                if not program_id or not program_name:
+                    st.error("請填寫 Program ID 與課程 / 服務名稱。")
+                else:
+                    with connect() as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO programs(program_id, program_name, program_category, default_fee_amount, billing_cycle, status, notes)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(program_id) DO UPDATE SET
+                                program_name = excluded.program_name,
+                                program_category = excluded.program_category,
+                                default_fee_amount = excluded.default_fee_amount,
+                                billing_cycle = excluded.billing_cycle,
+                                status = excluded.status,
+                                notes = excluded.notes
+                            """,
+                            (program_id, program_name, program_category, int(default_fee_amount), billing_cycle, status, notes),
+                        )
+                    log_audit("Program saved", "program", program_id, f"Saved program {program_name}.")
+                    st.success("課程資料已儲存。")
+                    st.rerun()
+
+    if programs.empty:
+        st.info("尚無課程資料。")
+        return
+    display = programs[["program_id", "program_name", "program_category", "default_fee_amount", "billing_cycle", "status", "notes"]].rename(
+        columns={
+            "program_id": "課程 ID",
+            "program_name": "課程 / 服務名稱",
+            "program_category": "類別",
+            "default_fee_amount": "預設金額",
+            "billing_cycle": "收費週期",
+            "status": "狀態",
+            "notes": "備註",
+        }
+    )
+    display["狀態"] = display["狀態"].replace({"active": "啟用", "inactive": "停用"})
+    st.dataframe(display, hide_index=True, use_container_width=True)
+
+
+def enrollments_page() -> None:
+    st.title("學生課程報名管理")
+    students = read_df("SELECT * FROM students WHERE status = 'active' ORDER BY class_name, student_name")
+    programs = read_df("SELECT * FROM programs WHERE status = 'active' ORDER BY program_category, program_name")
+
+    with st.expander("新增報名紀錄", expanded=True):
+        if students.empty or programs.empty:
+            st.info("請先建立啟用中的學生與課程。")
+        else:
+            with st.form("enrollment_form"):
+                student_options = {f"{row.student_name}（{row.student_id} / {row.class_name}）": row.student_id for row in students.itertuples()}
+                program_options = {f"{row.program_name}（{row.program_category} / {money(row.default_fee_amount)}）": row.program_id for row in programs.itertuples()}
+                c1, c2 = st.columns(2)
+                selected_student = c1.selectbox("學生", list(student_options.keys()))
+                selected_program = c2.selectbox("課程 / 服務項目", list(program_options.keys()))
+                c3, c4, c5 = st.columns(3)
+                start_date = c3.date_input("開始日期", value=date.today()).isoformat()
+                end_date_value = c4.date_input("結束日期（選填，若不用可留今天後手動清空）", value=date.today()).isoformat()
+                use_end_date = c4.checkbox("設定結束日期", value=False)
+                enrollment_status = c5.selectbox("報名狀態", ["active", "paused", "ended"], format_func=lambda x: {"active": "進行中", "paused": "暫停", "ended": "已結束"}[x])
+                custom_fee_amount = st.number_input("自訂金額（0 代表使用課程預設金額）", min_value=0, value=0, step=100)
+                notes = st.text_area("備註", height=80)
+                if st.form_submit_button("建立報名"):
+                    enrollment_id = next_enrollment_id()
+                    with connect() as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO enrollments(
+                                enrollment_id, student_id, program_id, start_date, end_date,
+                                enrollment_status, custom_fee_amount, notes
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                enrollment_id,
+                                student_options[selected_student],
+                                program_options[selected_program],
+                                start_date,
+                                end_date_value if use_end_date else None,
+                                enrollment_status,
+                                int(custom_fee_amount) if custom_fee_amount else None,
+                                notes,
+                            ),
+                        )
+                    log_audit("Enrollment created", "enrollment", enrollment_id, f"Created enrollment {enrollment_id}.")
+                    st.success("報名紀錄已建立。")
+                    st.rerun()
+
+    enrollments = read_df(
+        """
+        SELECT enrollments.*, students.student_name, students.class_name, programs.program_name,
+               programs.program_category, programs.default_fee_amount
+        FROM enrollments
+        JOIN students ON students.student_id = enrollments.student_id
+        JOIN programs ON programs.program_id = enrollments.program_id
+        ORDER BY enrollments.created_at DESC
+        """
+    )
+    if enrollments.empty:
+        st.info("尚無報名紀錄。")
+        return
+    edited = st.data_editor(
+        enrollments[
+            [
+                "enrollment_id",
+                "student_id",
+                "student_name",
+                "class_name",
+                "program_id",
+                "program_name",
+                "program_category",
+                "start_date",
+                "end_date",
+                "enrollment_status",
+                "custom_fee_amount",
+                "notes",
+            ]
+        ],
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        column_config={
+            "enrollment_status": st.column_config.SelectboxColumn("報名狀態", options=["active", "paused", "ended"]),
+        },
+    )
+    if st.button("儲存報名狀態與備註"):
+        with connect() as conn:
+            for row in edited.to_dict("records"):
+                conn.execute(
+                    """
+                    UPDATE enrollments
+                    SET start_date = ?, end_date = ?, enrollment_status = ?, custom_fee_amount = ?, notes = ?
+                    WHERE enrollment_id = ?
+                    """,
+                    (
+                        row["start_date"],
+                        row["end_date"] if pd.notna(row["end_date"]) else None,
+                        row["enrollment_status"],
+                        int(row["custom_fee_amount"]) if pd.notna(row["custom_fee_amount"]) and row["custom_fee_amount"] != "" else None,
+                        row["notes"] if pd.notna(row["notes"]) else "",
+                        row["enrollment_id"],
+                    ),
+                )
+        st.success("報名紀錄已更新。")
+        st.rerun()
+
+
+def bills_page() -> None:
+    st.title("繳費帳單管理")
+    students = read_df("SELECT * FROM students WHERE status = 'active' ORDER BY department, class_name, student_name")
+    programs = read_df("SELECT * FROM programs WHERE status = 'active' ORDER BY program_category, program_name")
+    active_enrollments = active_enrollments_query()
+    bills = read_df(
+        """
+        SELECT bills.*, COALESCE(students.department, '待確認') AS department,
+               programs.program_name, programs.program_category
+        FROM bills
+        LEFT JOIN students ON bills.student_id = students.student_id
+        LEFT JOIN programs ON bills.program_id = programs.program_id
+        ORDER BY bills.created_at DESC
+        """
+    )
+
+    with st.expander("依課程報名建立帳單", expanded=True):
+        if active_enrollments.empty:
+            st.info("尚無可建立帳單的啟用中報名紀錄。請先到「學生課程報名管理」建立報名。")
+        else:
+            with st.form("create_program_bills"):
+                c1, c2, c3 = st.columns(3)
+                billing_month = c1.text_input("帳單月份", value=date.today().strftime("%Y-%m"))
+                due_date_program = c2.date_input("繳費期限", value=date.today(), key="program_due_date").isoformat()
+                scope_label = c3.selectbox("建立範圍", ["所有啟用中報名", "單一課程", "課程類別", "班級", "單一學生", "指定報名"])
+
+                selected_value = ""
+                selected_enrollment_ids: list[str] = []
+                scope_map = {
+                    "所有啟用中報名": "all_active_enrollments",
+                    "單一課程": "one_program",
+                    "課程類別": "one_category",
+                    "班級": "one_class",
+                    "單一學生": "one_student",
+                    "指定報名": "selected_enrollments",
+                }
+                scope = scope_map[scope_label]
+                if scope_label == "單一課程":
+                    options = {f"{row.program_name}（{row.program_category}）": row.program_id for row in programs.itertuples()}
+                    selected_label = st.selectbox("課程", list(options.keys()))
+                    selected_value = options[selected_label]
+                elif scope_label == "課程類別":
+                    selected_value = st.selectbox("課程類別", sorted(programs["program_category"].dropna().unique().tolist()))
+                elif scope_label == "班級":
+                    selected_value = st.selectbox("班級", sorted(students["class_name"].dropna().unique().tolist()))
+                elif scope_label == "單一學生":
+                    options = {f"{row.student_name}（{row.student_id} / {row.class_name}）": row.student_id for row in students.itertuples()}
+                    selected_label = st.selectbox("學生", list(options.keys()))
+                    selected_value = options[selected_label]
+                elif scope_label == "指定報名":
+                    enrollment_options = {
+                        f"{row.enrollment_id} - {row.student_name} / {row.program_name}": row.enrollment_id
+                        for row in active_enrollments.itertuples()
+                    }
+                    selected_labels = st.multiselect("報名紀錄", list(enrollment_options.keys()))
+                    selected_enrollment_ids = [enrollment_options[label] for label in selected_labels]
+                notes = st.text_area("帳單備註", height=80, key="program_bill_notes")
+                if st.form_submit_button("依報名產生帳單與 QR Code"):
+                    if scope_label == "指定報名" and not selected_enrollment_ids:
+                        st.error("請至少選擇一筆報名紀錄。")
+                    else:
+                        count = create_bills_from_enrollments(
+                            billing_month,
+                            due_date_program,
+                            scope,
+                            selected_value,
+                            selected_enrollment_ids,
+                            notes,
+                        )
+                        st.success(f"已建立 {count} 筆課程帳單。")
+                        st.rerun()
+
+    with st.expander("建立傳統月費帳單", expanded=False):
+        if not students.empty and len(students[students["department"] == DEPARTMENT_UNKNOWN]) > 0:
+            st.warning("有學生部門仍為待確認，系統不會將這些學生納入批次帳單。")
+        with st.form("create_bills"):
+            c1, c2, c3, c4 = st.columns(4)
+            month = c1.text_input("月份", value=date.today().strftime("%Y-%m"))
+            fee_item = c2.text_input("收費項目", value="月費")
+            amount = c3.number_input("金額", min_value=0, value=8500, step=100)
+            due_date = c4.date_input("繳費期限", value=date.today()).isoformat()
+            c5, c6 = st.columns(2)
+            scope_label = c5.selectbox("建立範圍", ["全部學生", "部門", "班級", "單一學生"])
+            selected_value = ""
+            scope = "全部學生"
+            eligible = students[students["department"] != DEPARTMENT_UNKNOWN] if not students.empty and "department" in students.columns else students
+            if scope_label == "部門":
+                scope = "Department"
+                selected_value = c6.selectbox("部門", [KINDERGARTEN, AFTER_SCHOOL])
+            elif scope_label == "班級":
+                scope = "單一班級"
+                selected_value = c6.selectbox("班級", sorted(eligible["class_name"].dropna().unique().tolist()) if not eligible.empty else [])
+            elif scope_label == "單一學生":
+                scope = "單一學生"
+                options = {f"{row.student_name}（{row.student_id} / {row.department}）": row.student_id for row in eligible.itertuples()}
+                selected_label = c6.selectbox("學生", list(options.keys())) if options else ""
+                selected_value = options.get(selected_label, "")
+            notes = st.text_area("備註", height=80)
+            if st.form_submit_button("產生帳單與 QR Code"):
+                if scope_label in ["班級", "單一學生"] and not selected_value:
+                    st.error("請選擇有效的班級或學生。")
+                else:
+                    count = create_bills(month, fee_item, int(amount), due_date, scope, selected_value, notes)
+                    st.success(f"已建立 {count} 筆帳單。")
+                    st.rerun()
+
+    if bills.empty:
+        st.info("尚無帳單。")
+        return
+
+    display = bills[
+        [
+            "bill_id",
+            "department",
+            "program_category",
+            "program_name",
+            "student_name",
+            "class_name",
+            "month",
+            "fee_item",
+            "total_amount",
+            "paid_amount",
+            "remaining_amount",
+            "due_date",
+            "grace_until_date",
+            "payment_status",
+            "last_payment_date",
+            "receipt_number",
+            "notes",
+        ]
+    ].rename(
+        columns={
+            "bill_id": "帳單編號",
+            "department": "部門",
+            "program_category": "課程類別",
+            "program_name": "課程",
+            "student_name": "學生姓名",
+            "class_name": "班級",
+            "month": "月份",
+            "fee_item": "收費項目",
+            "total_amount": "帳單金額",
+            "paid_amount": "已記錄金額",
+            "remaining_amount": "尚待確認金額",
+            "due_date": "繳費期限",
+            "grace_until_date": "寬限日期",
+            "payment_status": "付款狀態",
+            "last_payment_date": "最近付款日期",
+            "receipt_number": "收據號碼",
+            "notes": "備註",
+        }
+    )
+    display["付款狀態"] = display["付款狀態"].replace(PAYMENT_STATUS_LABELS)
+    display["資料確認狀態"] = display["部門"].apply(lambda value: "需確認" if value == DEPARTMENT_UNKNOWN else "已確認")
+    st.dataframe(display, hide_index=True, use_container_width=True)
+
+    st.subheader("帳單 QR Code 與付款資訊")
+    bill_id = st.selectbox("選擇帳單", bills["bill_id"].tolist(), format_func=lambda x: f"{x} - {bills[bills['bill_id'] == x].iloc[0]['student_name']}")
+    bill = bills[bills["bill_id"] == bill_id].iloc[0].to_dict()
+    department_unconfirmed = is_student_department_unconfirmed(bill)
+    if department_unconfirmed:
+        st.warning(department_unconfirmed_message())
+    if not department_unconfirmed and (not bill.get("qr_path") or pd.isna(bill.get("qr_path")) or not Path(str(bill["qr_path"])).exists()):
+        bill["qr_path"] = generate_qr_for_bill(bill)
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if department_unconfirmed:
+            st.info("學生部門確認前，系統不提供 QR Code 重新產生或顯示。")
+        elif bill.get("qr_path") and not pd.isna(bill.get("qr_path")) and Path(str(bill["qr_path"])).exists():
+            st.image(bill["qr_path"], caption=f"QR Code 已綁定 Bill ID：{bill['bill_id']}", width=230)
+        else:
+            st.info("尚未產生 QR Code。")
+    with c2:
+        st.markdown(f"**部門：** {bill.get('department', DEPARTMENT_UNKNOWN)}")
+        if bill.get("program_name") and not pd.isna(bill.get("program_name")):
+            st.markdown(f"**課程：** {bill.get('program_name')} / {bill.get('program_category')}")
+        st.markdown(f"**帳單編號：** `{bill['bill_id']}`")
+        st.markdown(f"**學生：** {bill['student_name']} / {bill['class_name']}")
+        st.markdown(f"**收費項目：** {bill['fee_item']}")
+        st.markdown(f"**帳單金額：** {money(bill.get('total_amount') or bill['amount'])}")
+        st.markdown(f"**已記錄金額：** {money(bill.get('paid_amount') or 0)}")
+        st.markdown(f"**尚待確認金額：** {money(bill.get('remaining_amount') if pd.notna(bill.get('remaining_amount')) else bill.get('amount'))}")
+        st.markdown(f"**繳費期限：** {bill['due_date']}")
+        st.markdown(f"**付款狀態：** {bill.get('payment_status') or STATUS_LABELS.get(bill['status'], bill['status'])}")
+        st.markdown("**付款備註 / 轉帳附言**")
+        st.code(payment_reference(bill), language="text")
+        if st.button("重新產生 QR Code", disabled=department_unconfirmed):
+            try:
+                generate_qr_for_bill(bill)
+                st.success("QR Code 已重新產生，仍綁定同一 Bill ID。")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    st.subheader("付款更正 / 誤付款備註")
+    with st.form("payment_correction_form"):
+        note_type = st.selectbox("備註類型", ["誤付款", "重複付款", "金額錯誤", "家長備註錯誤", "人工更正紀錄", "退款/抵下月備註"])
+        status_map = {"尚未完成繳費": UNPAID, "待對帳確認": PENDING, "已付款": PAID, "取消帳單": CANCELLED}
+        reverse_status = {UNPAID: "尚未完成繳費", PENDING: "待對帳確認", PAID: "已付款", CANCELLED: "取消帳單"}
+        new_status_label = st.selectbox("調整付款狀態", list(status_map.keys()), index=list(status_map.keys()).index(reverse_status.get(bill["status"], "待對帳確認")))
+        new_payment_date = st.date_input("付款日期（僅已付款時使用）", value=date.today()).isoformat()
+        correction_note = st.text_area("行政備註", height=100)
+        if st.form_submit_button("儲存更正"):
+            new_status = status_map[new_status_label]
+            note_to_append = f"\n{note_type}（{date.today().isoformat()}）：{correction_note or '無'}"
+            if new_status == PAID:
+                try:
+                    mark_bill_paid(bill["bill_id"], new_payment_date, (bill.get("notes") or "") + note_to_append)
+                    log_audit("Manual correction made", "bill", bill["bill_id"], f"{note_type}: marked paid by admin.")
+                    st.success("帳單已標記為已付款，系統會依規則產生或更新收據。")
+                except Exception as exc:
+                    st.error(str(exc))
+            else:
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE bills SET status = ?, payment_status = ?, payment_date = NULL, notes = COALESCE(notes, '') || ? WHERE bill_id = ?",
+                        (new_status, new_status, note_to_append, bill["bill_id"]),
+                    )
+                log_audit("Manual correction made", "bill", bill["bill_id"], f"{note_type}: status changed to {new_status}.")
+                st.success("已儲存更正紀錄。")
+            st.rerun()
+
+    st.subheader("付款紀錄")
+    history = payment_history(bill["bill_id"])
+    if history.empty:
+        st.info("尚無付款紀錄。部分付款會先顯示在這裡，全額確認後才會產生正式數位收據。")
+    else:
+        history_display = history[
+            ["payment_id", "transaction_id", "transaction_date", "amount", "payer_name", "payment_note", "match_status", "notes"]
+        ].rename(
+            columns={
+                "payment_id": "付款紀錄 ID",
+                "transaction_id": "交易編號",
+                "transaction_date": "交易日期",
+                "amount": "金額",
+                "payer_name": "付款人",
+                "payment_note": "付款備註",
+                "match_status": "對帳狀態",
+                "notes": "備註",
+            }
+        )
+        st.dataframe(history_display, hide_index=True, use_container_width=True)
+
+    st.subheader("繳費安排紀錄")
+    arrangements = read_df("SELECT * FROM payment_arrangements WHERE bill_id = ? ORDER BY created_at DESC", (bill["bill_id"],))
+    latest = arrangements.iloc[0].to_dict() if not arrangements.empty else {}
+    with st.form("payment_arrangement_form"):
+        arrangement_status = st.selectbox(
+            "安排狀態",
+            ARRANGEMENT_STATUSES,
+            index=ARRANGEMENT_STATUSES.index(latest.get("arrangement_status")) if latest.get("arrangement_status") in ARRANGEMENT_STATUSES else 0,
+        )
+        c1, c2, c3 = st.columns(3)
+        promised_payment_date = c1.date_input("約定補繳日", value=date.today()).isoformat()
+        use_promised = c1.checkbox("設定約定補繳日", value=bool(latest.get("promised_payment_date")))
+        grace_until_date = c2.date_input("寬限至", value=date.today()).isoformat()
+        use_grace = c2.checkbox("設定寬限日期", value=bool(latest.get("grace_until_date")))
+        handled_by = c3.text_input("處理人員", value=latest.get("handled_by") or "")
+        arrangement_note = st.text_area("安排備註", value=latest.get("arrangement_note") or "", height=80)
+        if st.form_submit_button("儲存繳費安排"):
+            upsert_payment_arrangement(
+                bill["bill_id"],
+                arrangement_status,
+                promised_payment_date if use_promised else None,
+                grace_until_date if use_grace else None,
+                arrangement_note,
+                handled_by,
+            )
+            st.success("繳費安排已儲存。")
+            st.rerun()
+    if not arrangements.empty:
+        st.dataframe(
+            arrangements.rename(
+                columns={
+                    "arrangement_id": "安排 ID",
+                    "arrangement_status": "安排狀態",
+                    "promised_payment_date": "約定補繳日",
+                    "grace_until_date": "寬限至",
+                    "arrangement_note": "備註",
+                    "handled_by": "處理人員",
+                    "created_at": "建立時間",
+                    "updated_at": "更新時間",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.subheader("Audit Log")
+    audit = read_df("SELECT event_type, entity_type, entity_id, message, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 20")
+    if audit.empty:
+        st.info("尚無 audit log。")
+    else:
+        st.dataframe(
+            audit.rename(columns={"event_type": "事件", "entity_type": "類型", "entity_id": "編號", "message": "訊息", "created_at": "時間"}),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+def parent_payment_page() -> None:
+    st.title("家長繳費資訊確認")
+    bill_id = st.query_params.get("bill_id") or st.text_input("Bill ID")
+    if not bill_id:
+        st.info("請從 QR Code 開啟，或輸入 Bill ID。")
+        return
+
+    bills = read_df(
+        """
+        SELECT bills.*, programs.program_name, programs.program_category
+        FROM bills
+        LEFT JOIN programs ON bills.program_id = programs.program_id
+        WHERE bills.bill_id = ?
+        """,
+        (bill_id,),
+    )
+    if bills.empty:
+        st.error("查無此帳單，請向園方確認最新繳費單。")
+        return
+    bill = bills.iloc[0].to_dict()
+    settings = get_settings()
+
+    st.info("此頁面提供家長確認繳費資訊與收據留存使用。若近期有臨時狀況或繳費時間安排需求，請與園方聯繫，我們會協助確認後續處理方式。")
+    if is_student_department_unconfirmed(bill):
+        st.warning("此帳單資料仍在園方確認中，請先向園方確認最新繳費資訊。")
+
+    payment_status = bill.get("payment_status") or STATUS_LABELS.get(bill["status"], bill["status"])
+    if bill["status"] == PAID:
+        st.success("此帳單已完成繳費確認，請勿重複繳費。")
+        st.write(f"付款日期：{bill.get('payment_date') or '已確認'}")
+        st.write(f"收據號碼：{bill.get('receipt_number') or '收據產生中'}")
+    elif payment_status == "部分付款":
+        st.info("系統已記錄部分付款，待款項全額確認後將產生正式數位收據。")
+    elif payment_status == "寬限期中":
+        st.info("園方已記錄您的繳費時間安排，目前狀態為寬限期中。")
+    elif bill["status"] == PENDING or payment_status in ["待對帳確認", "金額需確認", "溢付款需處理"]:
+        st.warning("此筆款項需園方進一步確認，請勿重複付款。")
+    elif bill["status"] == CANCELLED or is_bill_stale(bill):
+        st.error("此帳單已失效，請向園方確認最新繳費單。")
+    else:
+        st.info("此項目目前尚未完成繳費確認。若您已付款，可能尚在對帳中；若需要延後繳費，請與園方聯繫。")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("學生姓名", bill["student_name"])
+    c2.metric("班級", bill["class_name"])
+    c3.metric("金額", money(bill.get("total_amount") or bill["amount"]))
+    if bill.get("program_name") and not pd.isna(bill.get("program_name")):
+        st.markdown(f"### 課程：{bill['program_name']}（{bill.get('program_category') or ''}）")
+    st.markdown(f"### 收費項目：{bill['fee_item']}")
+    st.markdown(f"**帳單編號：** `{bill['bill_id']}`")
+    st.markdown(f"**繳費期限：** {bill['due_date']}")
+    st.warning("請確認學生姓名、班級、金額與帳單編號正確後再付款。")
+
+    st.subheader("付款說明")
+    st.write(settings["bank_account_text"])
+    st.info("請透過幼兒園官方帳戶完成付款。本系統不處理、不代收、不保管任何款項。")
+    st.markdown("**付款備註 / 轉帳附言**")
+    st.code(payment_reference(bill), language="text")
+
+
+def reconciliation_page() -> None:
+    st.title("CSV 匯入與自動對帳")
+    st.caption("CSV 欄位：transaction_date, amount, payer_name, payment_note, transaction_id")
+    st.download_button(
+        "下載範例 CSV",
+        data=Path(sample_bank_statement_path()).read_bytes(),
+        file_name="sample_bank_statement.csv",
+        mime="text/csv",
+    )
+    upload = st.file_uploader("上傳銀行/支付紀錄 CSV", type=["csv"])
+    if upload:
+        df = pd.read_csv(upload)
+        st.subheader("匯入預覽")
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        if st.button("開始對帳"):
+            try:
+                result = import_and_reconcile(df)
+                display = table_status_chinese(result).rename(
+                    columns={
+                        "transaction_date": "交易日期",
+                        "amount": "金額",
+                        "payer_name": "付款人",
+                        "payment_note": "付款備註",
+                        "transaction_id": "交易編號",
+                        "match_status": "對帳狀態",
+                        "confidence": "信心度",
+                        "matched_bill_id": "配對帳單",
+                        "warning": "系統提示",
+                    }
+                )
+                st.success("對帳完成。")
+                st.dataframe(display, hide_index=True, use_container_width=True)
+            except Exception as exc:
+                st.error(str(exc))
+
+
+def build_receipt_backup_zip() -> bytes:
+    buffer = io.BytesIO()
+    bills = read_df("SELECT * FROM bills")
+    receipts = bills[bills["receipt_number"].notna()] if not bills.empty else bills
+    transactions = read_df("SELECT * FROM transactions")
+    payment_records = read_df("SELECT * FROM payment_records")
+    payment_arrangements = read_df("SELECT * FROM payment_arrangements")
+    programs = read_df("SELECT * FROM programs")
+    enrollments = read_df("SELECT * FROM enrollments")
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        safe_bills = bills.drop(columns=[col for col in ["qr_path", "receipt_path"] if col in bills.columns], errors="ignore")
+        safe_receipts = receipts.drop(columns=[col for col in ["qr_path", "receipt_path"] if col in receipts.columns], errors="ignore")
+        zf.writestr("bills.csv", safe_bills.to_csv(index=False, encoding="utf-8-sig"))
+        zf.writestr("receipts.csv", safe_receipts.to_csv(index=False, encoding="utf-8-sig"))
+        zf.writestr("transactions.csv", transactions.to_csv(index=False, encoding="utf-8-sig"))
+        zf.writestr("payment_records.csv", payment_records.to_csv(index=False, encoding="utf-8-sig"))
+        zf.writestr("payment_arrangements.csv", payment_arrangements.to_csv(index=False, encoding="utf-8-sig"))
+        zf.writestr("programs.csv", programs.to_csv(index=False, encoding="utf-8-sig"))
+        zf.writestr("enrollments.csv", enrollments.to_csv(index=False, encoding="utf-8-sig"))
+    return buffer.getvalue()
+
+
+def receipt_preview_html(bill: dict) -> str:
+    settings = get_settings()
+    return f"""
+    <div class="receipt-preview">
+        <div class="receipt-header">
+            <div class="receipt-title">{settings['kindergarten_name']}</div>
+            <div class="receipt-subtitle">數位收據</div>
+            <div>{settings['address']} ｜ 電話：{settings['contact_phone']}</div>
+        </div>
+        <div class="receipt-grid">
+            <div class="receipt-label">收據號碼</div><div class="receipt-value">{bill.get('receipt_number') or '尚未產生'}</div>
+            <div class="receipt-label">收據開立日期</div><div class="receipt-value">{bill.get('receipt_issue_date') or '尚未產生'}</div>
+            <div class="receipt-label">付款日期</div><div class="receipt-value">{bill.get('payment_date') or ''}</div>
+            <div class="receipt-label">繳費期限</div><div class="receipt-value">{bill.get('due_date') or ''}</div>
+            <div class="receipt-label">學生姓名</div><div class="receipt-value">{bill.get('student_name') or ''}</div>
+            <div class="receipt-label">班級</div><div class="receipt-value">{bill.get('class_name') or ''}</div>
+            <div class="receipt-label">課程</div><div class="receipt-value">{bill.get('program_name') if bill.get('program_name') and not pd.isna(bill.get('program_name')) else bill.get('fee_item') or ''}</div>
+            <div class="receipt-label">課程類別</div><div class="receipt-value">{bill.get('program_category') if bill.get('program_category') and not pd.isna(bill.get('program_category')) else ''}</div>
+            <div class="receipt-label">家長姓名</div><div class="receipt-value">{bill.get('parent_name') or ''}</div>
+            <div class="receipt-label">收費項目</div><div class="receipt-value">{bill.get('fee_item') or ''}</div>
+            <div class="receipt-label">金額</div><div class="receipt-value">{money(bill.get('amount'))}</div>
+            <div class="receipt-label">付款方式</div><div class="receipt-value">園方官方帳戶轉帳/匯款</div>
+            <div class="receipt-label">備註</div><div class="receipt-value">{bill.get('notes') or ''}</div>
+            <div class="receipt-label">經手人</div><div class="receipt-value">{settings['responsible_person']}</div>
+        </div>
+        <div class="seal-box">園方章</div>
+        <p><strong>本文件為數位收據，非統一發票。</strong></p>
+        <p>本收據供家長留存與園方對帳使用。</p>
+    </div>
+    """
+
+
+def receipts_page() -> None:
+    st.title("數位收據")
+    st.info("只有已付款帳單可以產生收據，未付款或待確認帳單不得開立收據。")
+    render_responsibility_panel()
+
+    bills = read_df(
+        """
+        SELECT bills.*, COALESCE(students.department, '待確認') AS department,
+               programs.program_name, programs.program_category
+        FROM bills
+        LEFT JOIN students ON bills.student_id = students.student_id
+        LEFT JOIN programs ON bills.program_id = programs.program_id
+        ORDER BY bills.created_at DESC
+        """
+    )
+    if bills.empty:
+        st.info("尚無帳單。")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    keyword = c1.text_input("搜尋學生 / 收據號碼 / 帳單編號")
+    month = c2.selectbox("月份", ["全部"] + sorted(bills["month"].dropna().unique().tolist()))
+    status = c3.selectbox("付款狀態", ["全部", PAID, UNPAID, PENDING], format_func=lambda x: STATUS_LABELS.get(x, x))
+    c4.download_button("匯出備份 ZIP", data=build_receipt_backup_zip(), file_name=f"kindergarten_backup_{date.today().isoformat()}.zip", mime="application/zip")
+
+    filtered = bills.copy()
+    if keyword:
+        mask = (
+            filtered["student_name"].astype(str).str.contains(keyword, case=False, na=False)
+            | filtered["bill_id"].astype(str).str.contains(keyword, case=False, na=False)
+            | filtered["receipt_number"].astype(str).str.contains(keyword, case=False, na=False)
+        )
+        filtered = filtered[mask]
+    if month != "全部":
+        filtered = filtered[filtered["month"] == month]
+    if status != "全部":
+        filtered = filtered[filtered["status"] == status]
+
+    display = filtered[
+        ["bill_id", "student_name", "class_name", "program_name", "month", "fee_item", "amount", "status", "payment_date", "receipt_issue_date", "receipt_number"]
+    ].rename(
+        columns={
+            "bill_id": "帳單編號",
+            "student_name": "學生姓名",
+            "class_name": "班級",
+            "program_name": "課程",
+            "month": "月份",
+            "fee_item": "收費項目",
+            "amount": "金額",
+            "status": "付款狀態",
+            "payment_date": "付款日期",
+            "receipt_issue_date": "收據開立日期",
+            "receipt_number": "收據號碼",
+        }
+    )
+    display["付款狀態"] = display["付款狀態"].replace(STATUS_LABELS)
+    display["收據狀態"] = display["收據號碼"].apply(lambda value: "已產生" if pd.notna(value) and str(value) else "尚未產生")
+    display["資料確認狀態"] = filtered["department"].apply(lambda value: "需確認" if value == DEPARTMENT_UNKNOWN else "已確認").values
+    st.dataframe(display, hide_index=True, use_container_width=True)
+
+    bill_id = st.selectbox("預覽 / 下載收據", filtered["bill_id"].tolist(), format_func=lambda x: f"{x} - {filtered[filtered['bill_id'] == x].iloc[0]['student_name']}")
+    bill = filtered[filtered["bill_id"] == bill_id].iloc[0].to_dict()
+    if is_student_department_unconfirmed(bill):
+        st.warning(department_unconfirmed_message())
+        st.markdown(receipt_preview_html(bill), unsafe_allow_html=True)
+        return
+    if bill["status"] != PAID:
+        st.warning("此帳單尚未完成繳費確認，因此不能產生正式數位收據。")
+        st.markdown(receipt_preview_html(bill), unsafe_allow_html=True)
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("產生 / 重新產生收據 PDF"):
+            try:
+                path = generate_receipt_pdf(bill_id)
+                st.success("收據 PDF 已產生。")
+                bill["receipt_path"] = path
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    with c2:
+        receipt_path = bill.get("receipt_path")
+        if receipt_path and not pd.isna(receipt_path) and Path(str(receipt_path)).exists():
+            st.download_button(
+                "下載 PDF 收據",
+                data=Path(str(receipt_path)).read_bytes(),
+                file_name=f"{bill.get('receipt_number') or bill_id}.pdf",
+                mime="application/pdf",
+            )
+        else:
+            st.info("尚未產生 PDF。")
+
+    st.markdown(receipt_preview_html(bill), unsafe_allow_html=True)
+
+
+def settings_page() -> None:
+    st.title("管理設定")
+    settings = get_settings()
+    with st.form("settings"):
+        kindergarten_name = st.text_input("園所名稱", settings["kindergarten_name"])
+        address = st.text_input("地址", settings["address"])
+        contact_phone = st.text_input("聯絡電話", settings["contact_phone"])
+        receipt_prefix = st.text_input("收據編號前綴", settings["receipt_prefix"])
+        bank_account_text = st.text_area("銀行 / 支付帳戶顯示文字", settings["bank_account_text"], height=100)
+        receipt_footer_text = st.text_area("收據頁尾文字", settings["receipt_footer_text"], height=80)
+        responsible_person = st.text_input("經手人 / 負責人顯示文字", settings["responsible_person"])
+        st.file_uploader("Logo 上傳預留欄位（V1 僅預留，不儲存）", type=["png", "jpg", "jpeg"])
+        if st.form_submit_button("儲存設定"):
+            save_settings(
+                {
+                    "kindergarten_name": kindergarten_name,
+                    "address": address,
+                    "contact_phone": contact_phone,
+                    "receipt_prefix": receipt_prefix,
+                    "bank_account_text": bank_account_text,
+                    "receipt_footer_text": receipt_footer_text,
+                    "responsible_person": responsible_person,
+                }
+            )
+            st.success("設定已儲存。")
+            st.rerun()
+    st.download_button("匯出帳單、收據與付款紀錄備份", data=build_receipt_backup_zip(), file_name=f"kindergarten_backup_{date.today().isoformat()}.zip", mime="application/zip")
+    render_responsibility_panel()
+
+
+def main() -> None:
+    st.markdown(CSS, unsafe_allow_html=True)
+    seed_sample_data()
+    classify_existing_students()
+    ensure_all_qr_codes()
+
+    page_options = {
+        "儀表板": dashboard_page,
+        "學生管理": students_page,
+        "課程與收費項目管理": programs_page,
+        "學生課程報名管理": enrollments_page,
+        "繳費帳單": bills_page,
+        "家長繳費頁 Mockup": parent_payment_page,
+        "CSV 匯入與自動對帳": reconciliation_page,
+        "數位收據": receipts_page,
+        "管理設定": settings_page,
+    }
+    query_page = st.query_params.get("page")
+    default_page = "家長繳費頁 Mockup" if query_page == "parent" else "儀表板"
+    with st.sidebar:
+        st.header("Kindergarten QR Payment")
+        page = st.radio("功能選單", list(page_options.keys()), index=list(page_options.keys()).index(default_page))
+        st.divider()
+        st.caption("V1：繳費紀錄、QR 資訊頁、CSV 對帳、數位收據。")
+    page_options[page]()
+
+
+if __name__ == "__main__":
+    main()

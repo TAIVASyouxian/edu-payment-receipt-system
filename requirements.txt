@@ -1,0 +1,5 @@
+streamlit>=1.47
+qrcode[pil]>=8.0
+pandas>=2.2
+reportlab>=4.0
+Pillow>=10.0

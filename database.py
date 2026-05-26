@@ -1,0 +1,331 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pandas as pd
+
+
+ROOT = Path(__file__).parent
+DATA_DIR = ROOT / "data"
+QR_DIR = DATA_DIR / "qr"
+RECEIPT_DIR = DATA_DIR / "receipts"
+DB_PATH = DATA_DIR / "kindergarten.db"
+SAMPLE_BANK_CSV = DATA_DIR / "sample_bank_statement.csv"
+
+
+def ensure_dirs() -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    QR_DIR.mkdir(exist_ok=True)
+    RECEIPT_DIR.mkdir(exist_ok=True)
+
+
+def connect() -> sqlite3.Connection:
+    ensure_dirs()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    with connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS students (
+                student_id TEXT PRIMARY KEY,
+                student_name TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                department TEXT NOT NULL DEFAULT '待確認',
+                parent_name TEXT NOT NULL,
+                contact TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS programs (
+                program_id TEXT PRIMARY KEY,
+                program_name TEXT NOT NULL,
+                program_category TEXT NOT NULL,
+                default_fee_amount INTEGER NOT NULL DEFAULT 0,
+                billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+                status TEXT NOT NULL DEFAULT 'active',
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS enrollments (
+                enrollment_id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL,
+                program_id TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT,
+                enrollment_status TEXT NOT NULL DEFAULT 'active',
+                custom_fee_amount INTEGER,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(student_id) REFERENCES students(student_id),
+                FOREIGN KEY(program_id) REFERENCES programs(program_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS bills (
+                bill_id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL,
+                program_id TEXT,
+                enrollment_id TEXT,
+                student_name TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                parent_name TEXT NOT NULL,
+                month TEXT NOT NULL,
+                billing_month TEXT,
+                fee_item TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                due_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Unpaid',
+                payment_status TEXT,
+                payment_date TEXT,
+                receipt_number TEXT,
+                receipt_issue_date TEXT,
+                notes TEXT,
+                qr_path TEXT,
+                qr_signature TEXT,
+                qr_stale INTEGER NOT NULL DEFAULT 0,
+                receipt_path TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(student_id) REFERENCES students(student_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS transactions (
+                transaction_id TEXT PRIMARY KEY,
+                transaction_date TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                payer_name TEXT,
+                payment_note TEXT,
+                match_status TEXT NOT NULL,
+                confidence TEXT,
+                matched_bill_id TEXT,
+                warning TEXT,
+                imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS payment_records (
+                payment_id TEXT PRIMARY KEY,
+                bill_id TEXT NOT NULL,
+                transaction_id TEXT,
+                transaction_date TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                payer_name TEXT,
+                payment_note TEXT,
+                match_status TEXT NOT NULL,
+                imported_batch_id TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(bill_id) REFERENCES bills(bill_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS payment_arrangements (
+                arrangement_id TEXT PRIMARY KEY,
+                bill_id TEXT NOT NULL,
+                arrangement_status TEXT NOT NULL,
+                promised_payment_date TEXT,
+                grace_until_date TEXT,
+                arrangement_note TEXT,
+                handled_by TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(bill_id) REFERENCES bills(bill_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id TEXT,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+        bill_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bills)").fetchall()}
+        if "receipt_issue_date" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN receipt_issue_date TEXT")
+        if "qr_signature" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_signature TEXT")
+        if "qr_stale" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN qr_stale INTEGER NOT NULL DEFAULT 0")
+        if "program_id" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN program_id TEXT")
+        if "enrollment_id" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN enrollment_id TEXT")
+        if "billing_month" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN billing_month TEXT")
+            conn.execute("UPDATE bills SET billing_month = month WHERE billing_month IS NULL")
+        if "payment_status" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN payment_status TEXT")
+            conn.execute("UPDATE bills SET payment_status = status WHERE payment_status IS NULL")
+        if "total_amount" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN total_amount INTEGER")
+            conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+        if "paid_amount" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN paid_amount INTEGER NOT NULL DEFAULT 0")
+        if "remaining_amount" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN remaining_amount INTEGER")
+            conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
+        if "grace_until_date" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN grace_until_date TEXT")
+        if "last_payment_date" not in bill_columns:
+            conn.execute("ALTER TABLE bills ADD COLUMN last_payment_date TEXT")
+        conn.execute("UPDATE bills SET total_amount = amount WHERE total_amount IS NULL")
+        conn.execute("UPDATE bills SET paid_amount = 0 WHERE paid_amount IS NULL")
+        conn.execute("UPDATE bills SET remaining_amount = COALESCE(total_amount, amount) - COALESCE(paid_amount, 0) WHERE remaining_amount IS NULL")
+        conn.execute("UPDATE bills SET paid_amount = COALESCE(total_amount, amount), remaining_amount = 0, payment_status = '已付款', last_payment_date = COALESCE(last_payment_date, payment_date) WHERE status = 'Paid'")
+        conn.execute("UPDATE bills SET payment_status = '未付款' WHERE status = 'Unpaid' AND (payment_status IS NULL OR payment_status = 'Unpaid')")
+        conn.execute("UPDATE bills SET payment_status = '待對帳確認' WHERE status = 'Pending Review' AND (payment_status IS NULL OR payment_status = 'Pending Review')")
+
+        student_columns = {row["name"] for row in conn.execute("PRAGMA table_info(students)").fetchall()}
+        if "department" not in student_columns:
+            conn.execute("ALTER TABLE students ADD COLUMN department TEXT NOT NULL DEFAULT '待確認'")
+        _seed_default_programs(conn)
+
+
+def _seed_default_programs(conn: sqlite3.Connection) -> None:
+    programs = [
+        ("PRG-KG", "幼兒園部", "幼兒園", 8500, "monthly", "active", "幼兒園月費或主要服務"),
+        ("PRG-CARE-WEEKDAY", "一般平日安親班", "安親班", 6500, "monthly", "active", "平日課後照顧"),
+        ("PRG-CARE-ENGLISH", "安親兒童美語", "兒童美語", 3200, "monthly", "active", "安親學生加選兒童美語"),
+        ("PRG-ENGLISH-ONLY", "兒童美語單修", "兒童美語", 3600, "monthly", "active", "只上兒童美語但沒有參加安親"),
+        ("PRG-WEEKEND-TALENT", "假日才藝班", "假日才藝", 2800, "monthly", "active", "週末才藝課程"),
+        ("PRG-CARE-ART", "安親美術班", "美術", 2600, "monthly", "active", "安親學生加選美術"),
+        ("PRG-CALLIGRAPHY", "書法班", "書法", 2400, "monthly", "active", "書法課程"),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO programs(program_id, program_name, program_category, default_fee_amount, billing_cycle, status, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(program_id) DO NOTHING
+        """,
+        programs,
+    )
+
+
+def read_df(query: str, params: tuple = ()) -> pd.DataFrame:
+    with connect() as conn:
+        return pd.read_sql_query(query, conn, params=params)
+
+
+def get_setting(key: str, fallback: str = "") -> str:
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else fallback
+
+
+def get_settings() -> dict[str, str]:
+    defaults = default_settings()
+    with connect() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    values = {row["key"]: row["value"] for row in rows}
+    return {**defaults, **values}
+
+
+def save_settings(values: dict[str, str]) -> None:
+    with connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO settings(key, value)
+            VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            list(values.items()),
+        )
+
+
+def default_settings() -> dict[str, str]:
+    return {
+        "kindergarten_name": "晴禾幼兒園",
+        "address": "台北市中正區和平路 100 號",
+        "contact_phone": "02-1234-5678",
+        "receipt_prefix": "RCP",
+        "bank_account_text": "請匯款至園方官方帳戶：銀行 000，帳號 000-000-000000，戶名：晴禾幼兒園",
+        "receipt_footer_text": "本收據供家長留存與園方對帳使用。",
+        "responsible_person": "園方行政",
+    }
+
+
+def seed_sample_data() -> None:
+    init_db()
+    with connect() as conn:
+        student_count = conn.execute("SELECT COUNT(*) AS count FROM students").fetchone()["count"]
+        if student_count:
+            return
+
+        save_settings(default_settings())
+        students = [
+            ("S001", "林小安", "小熊班", "林媽媽", "parent1@example.com", "active"),
+            ("S002", "陳語恩", "小熊班", "陳爸爸", "parent2@example.com", "active"),
+            ("S003", "黃子晴", "海豚班", "黃媽媽", "0912-345-678", "active"),
+            ("S004", "王柏宇", "海豚班", "王爸爸", "parent4@example.com", "active"),
+            ("S005", "李芮希", "兔子班", "李媽媽", "0922-222-222", "inactive"),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO students(student_id, student_name, class_name, parent_name, contact, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            students,
+        )
+        bills = [
+            ("KG-202605-0001", "S001", "林小安", "小熊班", "林媽媽", "2026-05", "月費", 8500, "2026-05-10", "Unpaid", None, None, "範例帳單"),
+            ("KG-202605-0002", "S002", "陳語恩", "小熊班", "陳爸爸", "2026-05", "月費", 8500, "2026-05-10", "Unpaid", None, None, ""),
+            ("KG-202605-0003", "S003", "黃子晴", "海豚班", "黃媽媽", "2026-05", "月費", 8800, "2026-05-10", "Unpaid", None, None, ""),
+            ("KG-202605-0004", "S004", "王柏宇", "海豚班", "王爸爸", "2026-05", "月費", 8800, "2026-05-10", "Paid", "2026-05-09", "RCP-202605-0004", "已完成付款"),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO bills(
+                bill_id, student_id, student_name, class_name, parent_name, month, fee_item, amount,
+                due_date, status, payment_date, receipt_number, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            bills,
+        )
+
+    sample = pd.DataFrame(
+        [
+            {
+                "transaction_date": "2026-05-11",
+                "amount": 8500,
+                "payer_name": "林媽媽",
+                "payment_note": "KG-202605-0001 林小安 月費",
+                "transaction_id": "T20260511001",
+            },
+            {
+                "transaction_date": "2026-05-11",
+                "amount": 8500,
+                "payer_name": "陳爸爸",
+                "payment_note": "陳語恩 月費",
+                "transaction_id": "T20260511002",
+            },
+            {
+                "transaction_date": "2026-05-11",
+                "amount": 8800,
+                "payer_name": "未知付款人",
+                "payment_note": "月費",
+                "transaction_id": "T20260511003",
+            },
+            {
+                "transaction_date": "2026-05-12",
+                "amount": 7600,
+                "payer_name": "黃媽媽",
+                "payment_note": "KG-202605-0003 金額輸入錯誤",
+                "transaction_id": "T20260512001",
+            },
+        ]
+    )
+    ensure_dirs()
+    sample.to_csv(SAMPLE_BANK_CSV, index=False, encoding="utf-8-sig")
