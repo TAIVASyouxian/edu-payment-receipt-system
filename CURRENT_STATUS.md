@@ -81,6 +81,9 @@ Project: Kindergarten QR Payment & Digital Receipt System
 - Fixed Traditional Chinese font rendering in downloaded PDF receipts.
   - Receipt PDFs now register and use a CJK-capable ReportLab CID font, preferring `STSong-Light`.
   - PDF receipt labels, values, disclaimer, footer, watermark, and seal text use the selected CJK font.
+- Fixed PDF receipt table width and A4 layout overflow.
+  - Receipt table, header line, footer note box, and seal now share the same printable content width.
+  - Long receipt text wraps inside cells instead of expanding the table.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園
@@ -131,6 +134,7 @@ Project: Kindergarten QR Payment & Digital Receipt System
 - `services.py`
   - Added masked student name helper, parent-facing watermark helper, and privacy-aware PDF receipt output.
   - Fixed PDF receipt font handling for Traditional Chinese rendering.
+  - Fixed PDF receipt table width, text wrapping, and A4 printable layout.
 - `safety_services.py`
   - Added QR token creation, regeneration, expiration, and used-token handling.
   - Updated QR generation to store only token URL content.

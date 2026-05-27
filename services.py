@@ -229,14 +229,55 @@ def register_pdf_font() -> str:
     raise RuntimeError("PDF receipt generation requires a CJK-capable ReportLab CID font.")
 
 
+def _wrap_text(text: object, font: str, size: float, max_width: float) -> list[str]:
+    text = str(text or "")
+    if not text:
+        return [""]
+    lines: list[str] = []
+    current = ""
+    for char in text:
+        test = current + char
+        if current and pdfmetrics.stringWidth(test, font, size) > max_width:
+            lines.append(current)
+            current = char
+        else:
+            current = test
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _draw_wrapped_text(
+    c: canvas.Canvas,
+    font: str,
+    x: float,
+    top: float,
+    max_width: float,
+    text: object,
+    size: float,
+    color: str,
+    line_height: float | None = None,
+    max_lines: int | None = None,
+) -> None:
+    line_height = line_height or size * 1.35
+    lines = _wrap_text(text, font, size, max_width)
+    if max_lines:
+        lines = lines[:max_lines]
+    c.setFillColor(colors.HexColor(color))
+    c.setFont(font, size)
+    y = top
+    for line in lines:
+        c.drawString(x, y, line)
+        y -= line_height
+
+
 def _draw_cell(c: canvas.Canvas, font: str, x: float, top: float, w: float, h: float, text: str, fill: str = "#FFFFFF", size: float = 10.2) -> None:
     c.setFillColor(colors.HexColor(fill))
     c.rect(x, top - h, w, h, fill=1, stroke=0)
     c.setStrokeColor(colors.HexColor("#CBD5E1"))
     c.rect(x, top - h, w, h, fill=0, stroke=1)
-    c.setFillColor(colors.HexColor("#475569" if fill == "#F8FAFC" else "#111827"))
-    c.setFont(font, size)
-    c.drawString(x + 3 * mm, top - 7 * mm, str(text or ""))
+    text_color = "#475569" if fill == "#F8FAFC" else "#111827"
+    _draw_wrapped_text(c, font, x + 7, top - 13, max(w - 14, 10), text, size, text_color, max_lines=2)
 
 
 def generate_receipt_pdf(bill_id: str) -> str:
@@ -279,18 +320,22 @@ def generate_receipt_pdf(bill_id: str) -> str:
     font = register_pdf_font()
     c = canvas.Canvas(str(path), pagesize=A4)
     width, height = A4
-    margin = 22 * mm
-    table_w = width - margin * 2
-    label_w = 34 * mm
+    margin = 45
+    inner_margin = 18
+    card_x = margin
+    card_w = width - margin * 2
+    table_x = card_x + inner_margin
+    table_w = card_w - inner_margin * 2
+    label_w = 80
     value_w = (table_w - label_w * 2) / 2
-    row_h = 11 * mm
+    row_h = 30
     payment_method = "園方官方帳戶轉帳/匯款"
 
     c.setTitle(f"{settings['kindergarten_name']} {bill['receipt_number']}")
     c.setFillColor(colors.HexColor("#F8FAFC"))
     c.rect(0, 0, width, height, fill=1, stroke=0)
     c.setFillColor(colors.white)
-    c.roundRect(margin, 18 * mm, table_w, height - 36 * mm, 4 * mm, fill=1, stroke=0)
+    c.roundRect(card_x, 18 * mm, card_w, height - 36 * mm, 4 * mm, fill=1, stroke=0)
 
     logo_w, logo_h = 34 * mm, 18 * mm
     logo_x = (width - logo_w) / 2
@@ -305,18 +350,20 @@ def generate_receipt_pdf(bill_id: str) -> str:
 
     c.setFillColor(colors.HexColor("#111827"))
     c.setFont(font, 20)
-    c.drawCentredString(width / 2, height - 48 * mm, settings["kindergarten_name"])
+    school_lines = _wrap_text(settings["kindergarten_name"], font, 20, table_w)
+    c.drawCentredString(width / 2, height - 48 * mm, school_lines[0])
     c.setFont(font, 15)
     c.drawCentredString(width / 2, height - 58 * mm, "數位收據")
     c.setFont(font, 9)
     c.setFillColor(colors.HexColor("#475569"))
-    c.drawCentredString(width / 2, height - 66 * mm, f"{settings['address']}  |  電話：{settings['contact_phone']}")
+    subtitle = f"{settings['address']}  |  電話：{settings['contact_phone']}"
+    for index, line in enumerate(_wrap_text(subtitle, font, 9, table_w)[:2]):
+        c.drawCentredString(width / 2, height - 66 * mm - index * 10, line)
 
     c.setStrokeColor(colors.HexColor("#334155"))
     c.setLineWidth(1.2)
-    c.line(margin + 8 * mm, height - 73 * mm, width - margin - 8 * mm, height - 73 * mm)
+    c.line(table_x, height - 73 * mm, table_x + table_w, height - 73 * mm)
 
-    table_x = margin + 8 * mm
     y = height - 86 * mm
 
     def row(top: float, left_label: str, left_value: str, right_label: str, right_value: str) -> float:
@@ -335,11 +382,11 @@ def generate_receipt_pdf(bill_id: str) -> str:
 
     notes_h = 22 * mm
     _draw_cell(c, font, table_x, y, label_w, notes_h, "備註", "#F8FAFC")
-    _draw_cell(c, font, table_x + label_w, y, table_w - 16 * mm - label_w, notes_h, "")
+    _draw_cell(c, font, table_x + label_w, y, table_w - label_w, notes_h, bill.get("notes") or "")
     y -= notes_h + 12 * mm
 
     seal_size = 28 * mm
-    seal_x = width - margin - 8 * mm - seal_size
+    seal_x = table_x + table_w - seal_size
     seal_y = y - seal_size + 4 * mm
     c.setStrokeColor(colors.HexColor("#B91C1C"))
     c.setLineWidth(1)
@@ -351,21 +398,17 @@ def generate_receipt_pdf(bill_id: str) -> str:
     note_y = 48 * mm
     c.setStrokeColor(colors.HexColor("#CBD5E1"))
     c.setFillColor(colors.HexColor("#F8FAFC"))
-    c.roundRect(margin + 8 * mm, note_y, table_w - 16 * mm, 32 * mm, 3 * mm, fill=1, stroke=1)
-    c.setFillColor(colors.HexColor("#111827"))
-    c.setFont(font, 10.5)
-    c.drawString(margin + 13 * mm, note_y + 22 * mm, "本收據為園方繳費紀錄憑證，非統一發票。")
-    c.setFillColor(colors.HexColor("#475569"))
-    c.setFont(font, 9)
-    c.drawString(margin + 13 * mm, note_y + 14 * mm, settings["receipt_footer_text"])
-    c.drawString(margin + 13 * mm, note_y + 7 * mm, "本系統僅協助園方記錄付款與產生收據，款項均直接進入園方官方帳戶。")
+    c.roundRect(table_x, note_y, table_w, 32 * mm, 3 * mm, fill=1, stroke=1)
+    _draw_wrapped_text(c, font, table_x + 14, note_y + 32 * mm - 18, table_w - 28, "本收據為園方繳費紀錄憑證，非統一發票。", 10.5, "#111827", max_lines=1)
+    _draw_wrapped_text(c, font, table_x + 14, note_y + 32 * mm - 38, table_w - 28, settings["receipt_footer_text"], 9, "#475569", max_lines=2)
+    _draw_wrapped_text(c, font, table_x + 14, note_y + 32 * mm - 66, table_w - 28, "本系統僅協助園方記錄付款與產生收據，款項均直接進入園方官方帳戶。", 9, "#475569", max_lines=1)
 
     c.setFillColor(colors.HexColor("#111827"))
     c.setFont(font, 10)
-    c.drawRightString(width - margin - 8 * mm, 31 * mm, f"經手人：{settings['responsible_person']}")
+    c.drawRightString(table_x + table_w, 31 * mm, f"經手人：{settings['responsible_person']}")
     c.setFillColor(colors.HexColor("#94A3B8"))
     c.setFont(font, 7)
-    c.drawCentredString(width / 2, 12 * mm, watermark)
+    c.drawCentredString(width / 2, 12 * mm, _wrap_text(watermark, font, 7, table_w)[0])
     c.save()
 
     with connect() as conn:
