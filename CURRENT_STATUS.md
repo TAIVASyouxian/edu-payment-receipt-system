@@ -78,6 +78,9 @@ Project: Kindergarten QR Payment & Digital Receipt System
   - Parent-facing transfer memo now displays only a friendly suggested memo such as `KG-202605-0006 幼兒園月費`; internal machine-readable text is not shown to parents.
   - CSV import now shows a 欄位對應說明, always previews the uploaded CSV, and blocks processing with a clear message if required columns are missing.
   - Added 管理設定 -> QA 測試資料 tools for generating, downloading, and clearing V1.5 QA data. Clearing only removes `QA-*` test records and bills tied to QA students.
+- Fixed Traditional Chinese font rendering in downloaded PDF receipts.
+  - Receipt PDFs now register and use a CJK-capable ReportLab CID font, preferring `STSong-Light`.
+  - PDF receipt labels, values, disclaimer, footer, watermark, and seal text use the selected CJK font.
 - Improved Program / Course UI for non-technical admin users.
 - Added department-first course selection:
   - 幼兒園
@@ -127,6 +130,7 @@ Project: Kindergarten QR Payment & Digital Receipt System
   - Added a small migration correction for the default 書法班 fee.
 - `services.py`
   - Added masked student name helper, parent-facing watermark helper, and privacy-aware PDF receipt output.
+  - Fixed PDF receipt font handling for Traditional Chinese rendering.
 - `safety_services.py`
   - Added QR token creation, regeneration, expiration, and used-token handling.
   - Updated QR generation to store only token URL content.

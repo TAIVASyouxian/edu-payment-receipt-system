@@ -220,11 +220,13 @@ def sample_bank_statement_path() -> str:
 
 
 def register_pdf_font() -> str:
-    try:
-        pdfmetrics.registerFont(UnicodeCIDFont("MSung-Light"))
-        return "MSung-Light"
-    except Exception:
-        return "Helvetica"
+    for font_name in ("STSong-Light", "MSung-Light"):
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+            return font_name
+        except Exception:
+            continue
+    raise RuntimeError("PDF receipt generation requires a CJK-capable ReportLab CID font.")
 
 
 def _draw_cell(c: canvas.Canvas, font: str, x: float, top: float, w: float, h: float, text: str, fill: str = "#FFFFFF", size: float = 10.2) -> None:
